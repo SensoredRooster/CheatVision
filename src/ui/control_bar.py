@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# (label, width, height) -- first entry is always the "follow auto-calibration" option.
 RESOLUTION_PRESETS: tuple[tuple[str, int, int], ...] = (
     ("AUTO", 0, 0),
     ("3840x2160", 3840, 2160),
@@ -25,7 +24,6 @@ RESOLUTION_PRESETS: tuple[tuple[str, int, int], ...] = (
     ("640x480", 640, 480),
 )
 
-# (label, fps) -- first entry is always the "follow auto-calibration" option.
 FPS_PRESETS: tuple[tuple[str, int], ...] = (
     ("AUTO", 0),
     ("144", 144),
@@ -40,11 +38,7 @@ FPS_PRESETS: tuple[tuple[str, int], ...] = (
 
 
 class ControlBar(QWidget):
-    """Top bar: VOD mount, view-mode switch, manual capture mode, baseline recording, device rescan.
-
-    Laid out as three loosely-coupled clusters (mount | view modes | capture mode + actions)
-    separated by two flexible stretches, instead of a stretch wedged after every single button.
-    """
+    """Top bar: import, rescan, source combo, view modes, session (LIVE + baseline)."""
 
     mountVodRequested = Signal()
     viewModeChanged = Signal(str)
@@ -52,7 +46,6 @@ class ControlBar(QWidget):
     rescanDevicesRequested = Signal()
     analyzeDisplayToggled = Signal(bool)
     sourceProfileChanged = Signal(str)
-    # (width, height, fps) -- (0, 0, 0) means "let auto-calibration decide".
     captureModeChanged = Signal(int, int, int)
 
     def __init__(self, parent=None):
@@ -63,47 +56,62 @@ class ControlBar(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(8)
 
-        # Left cluster: source actions.
-        self.mount_vod_btn = QPushButton("📁 MOUNT VOD")
+        self.mount_vod_btn = QPushButton("IMPORT")
         self.mount_vod_btn.setObjectName("MountButton")
+        self.mount_vod_btn.setToolTip("Import a gameplay VOD for review.")
         self.mount_vod_btn.clicked.connect(self.mountVodRequested.emit)
         layout.addWidget(self.mount_vod_btn)
 
-        self.rescan_btn = QPushButton("🔄 RESCAN")
+        self.rescan_btn = QPushButton("RESCAN")
         self.rescan_btn.clicked.connect(self.rescanDevicesRequested.emit)
         layout.addWidget(self.rescan_btn)
 
-        self.profile_group = self._build_profile_group()
-        layout.addWidget(self.profile_group)
+        self.profile_combo = QComboBox()
+        self.profile_combo.setObjectName("SourceCombo")
+        self.profile_combo.setToolTip(
+            "Source profile: ignore stream chrome / facecam and scene-gate kinematics."
+        )
+        for text, profile in (("HDMI", "hdmi_game"), ("STREAM", "stream_window"), ("VOD", "vod_file")):
+            self.profile_combo.addItem(text, profile)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        layout.addWidget(self.profile_combo)
 
-        # Center cluster: view-mode chips.
         layout.addStretch(1)
         layout.addWidget(self._build_view_mode_group())
         layout.addStretch(1)
 
-        # Right cluster: capture mode, LIVE|VOD pill, analyze toggle, baseline.
         self.capture_mode_group = self._build_capture_mode_group()
         layout.addWidget(self.capture_mode_group)
 
-        self.mode_pill = QLabel("LIVE")
-        self.mode_pill.setObjectName("ModePill")
-        self.mode_pill.setProperty("mode", "live")
-        layout.addWidget(self.mode_pill)
+        self.session_group = self._build_session_group()
+        layout.addWidget(self.session_group)
 
         self.analyze_display_checkbox = QCheckBox("Analyze this display anyway")
         self.analyze_display_checkbox.setToolTip(
-            "Live capture does not run YOLO player detection by default (desktop/task "
-            "manager capture would produce false-positive boxes). Check this to force "
-            "detection on for the current live session."
+            "Live capture does not run YOLO player detection by default."
         )
         self.analyze_display_checkbox.toggled.connect(self.analyzeDisplayToggled.emit)
         self.analyze_display_checkbox.hide()
 
-        self.record_baseline_btn = QPushButton("⏺ RECORD CLEAN BASELINE")
+    def _build_session_group(self) -> QFrame:
+        group = QFrame(self)
+        group.setObjectName("SessionGroup")
+        group_layout = QHBoxLayout(group)
+        group_layout.setContentsMargins(4, 4, 6, 4)
+        group_layout.setSpacing(8)
+
+        self.mode_pill = QLabel("LIVE")
+        self.mode_pill.setObjectName("ModePill")
+        self.mode_pill.setProperty("mode", "live")
+        group_layout.addWidget(self.mode_pill)
+
+        self.record_baseline_btn = QPushButton("RECORD CLEAN BASELINE")
+        self.record_baseline_btn.setObjectName("BaselineButton")
         self.record_baseline_btn.clicked.connect(self.recordBaselineToggled.emit)
-        layout.addWidget(self.record_baseline_btn)
+        group_layout.addWidget(self.record_baseline_btn)
+        return group
 
     def _build_view_mode_group(self) -> QFrame:
         group = QFrame(self)
@@ -123,27 +131,6 @@ class ControlBar(QWidget):
             self.view_buttons[mode_id] = button
             group_layout.addWidget(button)
         self.view_buttons["standard"].setChecked(True)
-        return group
-
-    def _build_profile_group(self) -> QFrame:
-        group = QFrame(self)
-        group.setObjectName("ControlGroup")
-        group_layout = QHBoxLayout(group)
-        group_layout.setContentsMargins(4, 4, 4, 4)
-        group_layout.setSpacing(6)
-
-        label = QLabel("SRC")
-        label.setObjectName("ControlGroupLabel")
-        group_layout.addWidget(label)
-
-        self.profile_combo = QComboBox()
-        self.profile_combo.setToolTip(
-            "Source profile: ignore stream chrome / facecam and scene-gate kinematics."
-        )
-        for text, profile in (("HDMI", "hdmi_game"), ("STREAM", "stream_window"), ("VOD", "vod_file")):
-            self.profile_combo.addItem(text, profile)
-        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        group_layout.addWidget(self.profile_combo)
         return group
 
     def _on_profile_changed(self, index: int) -> None:
@@ -171,10 +158,7 @@ class ControlBar(QWidget):
         group_layout.addWidget(res_label)
 
         self.resolution_combo = QComboBox()
-        self.resolution_combo.setToolTip(
-            "Manually pin the capture resolution. AUTO lets the app calibrate the "
-            "best mode your device actually supports."
-        )
+        self.resolution_combo.setToolTip("Manually pin the capture resolution.")
         for label, _width, _height in RESOLUTION_PRESETS:
             self.resolution_combo.addItem(label)
         self.resolution_combo.currentIndexChanged.connect(self._on_capture_mode_changed)
@@ -185,15 +169,11 @@ class ControlBar(QWidget):
         group_layout.addWidget(fps_label)
 
         self.fps_combo = QComboBox()
-        self.fps_combo.setToolTip(
-            "Manually pin the capture frame rate. AUTO lets the app calibrate the "
-            "best rate your device actually supports."
-        )
+        self.fps_combo.setToolTip("Manually pin the capture frame rate.")
         for label, _fps in FPS_PRESETS:
             self.fps_combo.addItem(label)
         self.fps_combo.currentIndexChanged.connect(self._on_capture_mode_changed)
         group_layout.addWidget(self.fps_combo)
-
         return group
 
     def _on_capture_mode_changed(self, _index: int) -> None:
@@ -218,12 +198,6 @@ class ControlBar(QWidget):
 
     def set_recording_baseline(self, active: bool, stream_mode: str = "live") -> None:
         if stream_mode == "vod":
-            if active:
-                self.record_baseline_btn.setText("⏹ STOP MARKING CLEAN")
-            else:
-                self.record_baseline_btn.setText("⏺ MARK VOD AS CLEAN BASELINE")
+            self.record_baseline_btn.setText("STOP MARKING CLEAN" if active else "MARK VOD AS CLEAN")
         else:
-            if active:
-                self.record_baseline_btn.setText("⏹ STOP CLEAN BASELINE")
-            else:
-                self.record_baseline_btn.setText("⏺ RECORD CLEAN BASELINE")
+            self.record_baseline_btn.setText("STOP BASELINE" if active else "RECORD CLEAN BASELINE")
