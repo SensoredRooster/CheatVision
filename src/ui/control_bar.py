@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -99,16 +99,19 @@ class ControlBar(QWidget):
         group = QFrame(self)
         group.setObjectName("SessionGroup")
         group_layout = QHBoxLayout(group)
-        group_layout.setContentsMargins(4, 4, 6, 4)
+        group_layout.setContentsMargins(0, 0, 0, 0)
         group_layout.setSpacing(8)
 
         self.mode_pill = QLabel("LIVE")
         self.mode_pill.setObjectName("ModePill")
         self.mode_pill.setProperty("mode", "live")
+        self.mode_pill.setAlignment(Qt.AlignCenter)
+        self.mode_pill.setFixedHeight(26)
         group_layout.addWidget(self.mode_pill)
 
         self.record_baseline_btn = QPushButton("RECORD CLEAN BASELINE")
         self.record_baseline_btn.setObjectName("BaselineButton")
+        self.record_baseline_btn.setFixedHeight(26)
         self.record_baseline_btn.clicked.connect(self.recordBaselineToggled.emit)
         group_layout.addWidget(self.record_baseline_btn)
         return group
