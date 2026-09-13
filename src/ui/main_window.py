@@ -111,6 +111,8 @@ class MainWindow(QMainWindow):
         self._event_count = 0
         self._flagged_track_ids: OrderedDict[int, None] = OrderedDict()
         self._analyze_display_anyway = False
+        self._tools_panel_visible = True
+        self._tools_panel_width = 268
         self._is_stream_frozen = False
         self._current_device_name = ""
         self._current_device: dict | None = None
@@ -145,6 +147,7 @@ class MainWindow(QMainWindow):
         self.control_bar.rescanDevicesRequested.connect(self._on_rescan_devices_requested)
         self.control_bar.captureModeChanged.connect(self._on_capture_mode_changed)
         self.control_bar.sourceProfileChanged.connect(self._on_source_profile_changed)
+        self.control_bar.toolsPanelToggled.connect(self._on_tools_panel_toggled)
         layout.addWidget(self.control_bar, 0)
 
         self.body_splitter = QSplitter(Qt.Horizontal, self)
@@ -176,7 +179,7 @@ class MainWindow(QMainWindow):
 
         self.body_splitter.addWidget(self.incidents_drawer)
 
-        self.body_splitter.setCollapsible(0, False)
+        self.body_splitter.setCollapsible(0, True)
         self.body_splitter.setCollapsible(1, False)
         self.body_splitter.setCollapsible(2, True)
         self.body_splitter.setStretchFactor(0, 0)
@@ -447,6 +450,31 @@ class MainWindow(QMainWindow):
         self._analyze_display_anyway = checked
         self._update_detection_enabled()
         self._update_signal_card()
+
+    def _on_tools_panel_toggled(self, visible: bool) -> None:
+        self._tools_panel_visible = bool(visible)
+        if self.left_rail is None:
+            return
+        if visible:
+            self.left_rail.show()
+            self.left_rail.setMinimumWidth(self._tools_panel_width)
+            self.left_rail.setMaximumWidth(self._tools_panel_width)
+        else:
+            self._tools_panel_width = max(268, self.left_rail.width(), self._tools_panel_width)
+            self.left_rail.setMinimumWidth(0)
+            self.left_rail.setMaximumWidth(16777215)
+            self.left_rail.hide()
+        sizes = self.body_splitter.sizes()
+        if len(sizes) != 3:
+            return
+        right_width = max(28, sizes[2])
+        total = max(sum(sizes), self.width())
+        if visible:
+            center_width = max(320, total - self._tools_panel_width - right_width)
+            self.body_splitter.setSizes([self._tools_panel_width, center_width, right_width])
+        else:
+            center_width = max(320, total - right_width)
+            self.body_splitter.setSizes([0, center_width, right_width])
 
     def _apply_source_profile(self, profile: str) -> None:
         self.settings["source_profile"] = profile

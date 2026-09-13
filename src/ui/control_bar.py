@@ -46,6 +46,7 @@ class ControlBar(QWidget):
     analyzeDisplayToggled = Signal(bool)
     sourceProfileChanged = Signal(str)
     captureModeChanged = Signal(int, int, int)
+    toolsPanelToggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,6 +67,13 @@ class ControlBar(QWidget):
         self.rescan_btn = QPushButton("RESCAN")
         self.rescan_btn.clicked.connect(self.rescanDevicesRequested.emit)
         layout.addWidget(self.rescan_btn)
+
+        self.tools_panel_btn = QPushButton("TOOLS")
+        self.tools_panel_btn.setCheckable(True)
+        self.tools_panel_btn.setChecked(True)
+        self.tools_panel_btn.setToolTip("Show or hide the left tools panel.")
+        self.tools_panel_btn.toggled.connect(self._on_tools_panel_toggled)
+        layout.addWidget(self.tools_panel_btn)
 
         self.profile_combo = QComboBox()
         self.profile_combo.setObjectName("SourceCombo")
@@ -101,6 +109,10 @@ class ControlBar(QWidget):
         profile = self.profile_combo.itemData(index)
         if profile:
             self.sourceProfileChanged.emit(str(profile))
+
+    def _on_tools_panel_toggled(self, visible: bool) -> None:
+        self.tools_panel_btn.setText("TOOLS" if visible else "TOOLS OFF")
+        self.toolsPanelToggled.emit(visible)
 
     def set_source_profile(self, profile: str) -> None:
         index = self.profile_combo.findData(profile)
@@ -157,3 +169,12 @@ class ControlBar(QWidget):
             self.record_baseline_btn.setText("STOP MARKING CLEAN" if active else "MARK VOD AS CLEAN")
         else:
             self.record_baseline_btn.setText("STOP BASELINE" if active else "RECORD CLEAN BASELINE")
+
+    def set_tools_panel_visible(self, visible: bool) -> None:
+        if self.tools_panel_btn.isChecked() == visible:
+            self.tools_panel_btn.setText("TOOLS" if visible else "TOOLS OFF")
+            return
+        self.tools_panel_btn.blockSignals(True)
+        self.tools_panel_btn.setChecked(visible)
+        self.tools_panel_btn.blockSignals(False)
+        self.tools_panel_btn.setText("TOOLS" if visible else "TOOLS OFF")
