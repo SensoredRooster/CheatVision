@@ -1,5 +1,5 @@
 [project]
-name = "pixelvision"
+name = "cheatvision"
 version = "0.1.0"
 description = "Windows spectator / VOD review console for FPS aim anomalies"
 readme = "README.md"
