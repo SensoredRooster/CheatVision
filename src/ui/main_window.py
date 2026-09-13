@@ -6,7 +6,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Slot
-from PySide6.QtGui import QCloseEvent, QResizeEvent
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
@@ -190,7 +190,10 @@ class MainWindow(QMainWindow):
         self._render_thread.started.connect(self._render_worker.start)
         self._render_worker.set_view_mode(self._view_mode)
         self._render_worker.set_flagged_track_ids(())
+        # The canvas has no real geometry yet (we're still in __init__, before
+        # show()); it reports its size as soon as it is laid out.
         self._render_worker.set_target_size(self.video_canvas.width(), self.video_canvas.height())
+        self.video_canvas.viewportResized.connect(self._on_canvas_resized)
         self._render_thread.start()
 
         self._wire_capture_worker()
@@ -696,7 +699,7 @@ class MainWindow(QMainWindow):
         self.event_logger.log("Application closed")
         super().closeEvent(event)
 
-    def resizeEvent(self, event: QResizeEvent) -> None:
+    @Slot(int, int)
+    def _on_canvas_resized(self, width: int, height: int) -> None:
         if self._render_worker is not None:
-            self._render_worker.set_target_size(self.video_canvas.width(), self.video_canvas.height())
-        super().resizeEvent(event)
+            self._render_worker.set_target_size(width, height)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -14,7 +14,16 @@ class VideoCanvas(QWidget):
     Holds references to both the full FrameContext and the rendered numpy frame
     because QImage(Format_BGR888) wraps the backing numpy buffer without
     copying it.
+
+    Emits ``viewportResized(w, h)`` whenever its own geometry changes so the
+    render worker can fit frames to the real canvas. The main window's
+    resizeEvent is not enough: the first layout after show(), splitter drags
+    and the TOOLS toggle all change this widget without resizing the window,
+    which left the worker rendering at its 320x180 placeholder size and the
+    canvas upscaling that ~4x (blurry until the user happened to resize).
     """
+
+    viewportResized = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -23,6 +32,12 @@ class VideoCanvas(QWidget):
         self._frame_buffer = None
         self._image: QImage | None = None
         self._idle_text = "No capture device detected — Mount a gameplay recording to begin"
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        size = event.size()
+        if size.width() > 0 and size.height() > 0:
+            self.viewportResized.emit(size.width(), size.height())
 
     def set_idle_text(self, text: str) -> None:
         self._idle_text = text
