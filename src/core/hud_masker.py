@@ -23,6 +23,10 @@ _DEFAULT_MASK_FRAC: tuple[Frac, ...] = (
     (0.824, 0.000, 1.000, 0.167),
     (0.402, 0.903, 0.598, 1.000),
 )
+# First-person viewmodel (weapon + hands): the largest "person" YOLO finds in
+# a legit clip is the player's own gun (measured 0.47-0.64 confidence). Any
+# detection whose centre falls here is not an enemy.
+_DEFAULT_DETECTION_IGNORE_FRAC: tuple[Frac, ...] = ((0.30, 0.55, 0.72, 1.00),)
 
 
 def _content_pixels(width: int, height: int, content_frac: Tuple[float, float, float, float]) -> tuple[int, int, int, int]:
@@ -112,12 +116,14 @@ class HUDMasker:
             self.hud_energy_frac = tuple(profile.hud_energy_frac)
             self.hud_energy_stdev = float(profile.hud_energy_stdev)
             self.require_hud_energy = bool(profile.require_hud_energy)
+            self.detection_ignore_frac = tuple(profile.detection_ignore_frac)
         else:
             self._profile_id = "warzone"
             self.hud_mask_frac = _DEFAULT_MASK_FRAC
             self.hud_energy_frac = _DEFAULT_ENERGY_FRAC
             self.hud_energy_stdev = _DEFAULT_ENERGY_STDEV
             self.require_hud_energy = True
+            self.detection_ignore_frac = _DEFAULT_DETECTION_IGNORE_FRAC
 
         if hud_mask_frac is not None:
             self.hud_mask_frac = tuple(hud_mask_frac)
@@ -203,6 +209,30 @@ class HUDMasker:
         height: int | None = None,
     ) -> bool:
         """True if the bbox *center* sits inside a HUD fraction."""
+        return self._center_in_fracs(x1, y1, x2, y2, self.hud_mask_frac, width, height)
+
+    def is_viewmodel_detection(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> bool:
+        """True if the bbox centre sits where the player's own weapon is drawn."""
+        return self._center_in_fracs(x1, y1, x2, y2, self.detection_ignore_frac, width, height)
+
+    def _center_in_fracs(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        fracs: Sequence[Frac],
+        width: int | None,
+        height: int | None,
+    ) -> bool:
         frame_w = int(width) if width is not None else self.width
         frame_h = int(height) if height is not None else self.height
         if frame_w <= 0 or frame_h <= 0:
@@ -211,7 +241,7 @@ class HUDMasker:
         cy = (float(y1) + float(y2)) * 0.5
         nx = cx / frame_w
         ny = cy / frame_h
-        for fx0, fy0, fx1, fy1 in self.hud_mask_frac:
+        for fx0, fy0, fx1, fy1 in fracs:
             if fx0 <= nx <= fx1 and fy0 <= ny <= fy1:
                 return True
         return False

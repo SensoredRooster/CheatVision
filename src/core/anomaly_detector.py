@@ -25,6 +25,13 @@ class CrosshairKinematicsAnalyzer:
     camera, which shows up as a global translation of the scene under that
     reticle. We measure that with phase correlation on the center ROI and
     treat the reticle itself as geometric center (optionally refined).
+
+    Thresholds were set against real 2560x1440@144 Warzone footage of legit
+    play (see README "Aim scoring"): a human flick is *briefly* perfectly
+    straight (straightness 0.99+ for a handful of frames, steps up to ~47px
+    at 960x540) but never holds a tremor-free line for long. What separates
+    assistance is *sustained* geometric motion, so the line rule needs a
+    minimum straight duration in seconds, not a single-window snapshot.
     """
 
     def __init__(
@@ -37,6 +44,8 @@ class CrosshairKinematicsAnalyzer:
         zero_variance_epsilon: float = 0.45,
         min_phase_response: float = 0.12,
         lock_streak: int = 3,
+        line_hold_seconds: float = 0.25,
+        lock_hold_seconds: float = 0.12,
     ) -> None:
         self.window_size = window_size
         self.roi_ratio = roi_ratio
@@ -46,12 +55,20 @@ class CrosshairKinematicsAnalyzer:
         self.zero_variance_epsilon = zero_variance_epsilon
         self.min_phase_response = min_phase_response
         self.lock_streak = lock_streak
+        # A geometric line only counts once it has persisted this long; on
+        # legit footage straight runs last <0.15s (measured max 22 analysed
+        # frames at 72fps ~ 0.3s across a whole clip, median far lower).
+        self.line_hold_seconds = line_hold_seconds
+        self.lock_hold_seconds = lock_hold_seconds
         self.delta_history: deque[tuple[float, float]] = deque(maxlen=window_size)
         self.previous_roi: Optional[np.ndarray] = None
         self.previous_gray: Optional[np.ndarray] = None
         self.zero_tremor_streak = 0
         self.last_metrics: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        self._line_since: float | None = None
+        self._lock_since: float | None = None
+        self._last_timestamp: float | None = None
 
     def reset(self) -> None:
         with self._lock:
@@ -60,6 +77,9 @@ class CrosshairKinematicsAnalyzer:
             self.previous_gray = None
             self.zero_tremor_streak = 0
             self.last_metrics = None
+            self._line_since = None
+            self._lock_since = None
+            self._last_timestamp = None
 
     def _center_roi(self, gray: np.ndarray) -> np.ndarray:
         height, width = gray.shape[:2]
@@ -70,6 +90,15 @@ class CrosshairKinematicsAnalyzer:
         return gray[y1 : y1 + roi_h, x1 : x1 + roi_w]
 
     def _scene_delta(self, previous: np.ndarray, current: np.ndarray) -> tuple[float, float, float]:
+        """Global translation between two centre ROIs.
+
+        Fine estimate: phase correlation on four edge bands (sub-pixel, but
+        only valid for shifts small relative to the band). Coarse estimate:
+        phase correlation on the whole ROI. A snap of 60px at 960x540 is
+        invisible to the bands and used to be measured as ~7px, hiding the
+        very motion the snap rules look for; when the two disagree by more
+        than a band can resolve, the coarse estimate wins.
+        """
         height, width = previous.shape[:2]
         band_h = max(16, height // 5)
         band_w = max(16, width // 5)
@@ -96,13 +125,30 @@ class CrosshairKinematicsAnalyzer:
             responses.append(float(response))
         if not responses:
             return 0.0, 0.0, 0.0
-        return float(np.median(shifts_x)), float(np.median(shifts_y)), float(np.median(responses))
+        fine_x, fine_y, fine_resp = float(np.median(shifts_x)), float(np.median(shifts_y)), float(np.median(responses))
+
+        window = cv2.createHanningWindow((width, height), cv2.CV_32F)
+        coarse_shift, coarse_resp = cv2.phaseCorrelate(
+            previous.astype(np.float32), current.astype(np.float32), window
+        )
+        coarse_x, coarse_y = float(coarse_shift[0]), float(coarse_shift[1])
+        resolvable = min(band_h, band_w) * 0.5
+        disagreement = ((coarse_x - fine_x) ** 2 + (coarse_y - fine_y) ** 2) ** 0.5
+        if disagreement > resolvable and coarse_resp >= self.min_phase_response:
+            return coarse_x, coarse_y, float(coarse_resp)
+        return fine_x, fine_y, fine_resp
 
     def _refine_reticle(self, gray: np.ndarray) -> tuple[int, int]:
-        """Prefer a small bright mark at center (dot/plus); else geometric center."""
+        """Prefer a small bright mark at center (dot/plus); else geometric center.
+
+        The refinement must be conservative: on textured scenes the brightest
+        speck near centre jumps around by +-20px frame to frame, which the
+        kinematics would read as tremor. Only accept a mark that is both
+        bright *and* far brighter than anything else in the patch.
+        """
         height, width = gray.shape[:2]
         cx, cy = width // 2, height // 2
-        radius = 24
+        radius = 12
         y1 = max(0, cy - radius)
         x1 = max(0, cx - radius)
         y2 = min(height, cy + radius)
@@ -110,10 +156,10 @@ class CrosshairKinematicsAnalyzer:
         patch = gray[y1:y2, x1:x2]
         if patch.size == 0:
             return (cx, cy)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
         tophat = cv2.morphologyEx(patch, cv2.MORPH_TOPHAT, kernel)
         _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(tophat)
-        if max_val < 18:
+        if max_val < 60 or max_val < float(np.percentile(tophat, 95)) * 1.8:
             return (cx, cy)
         return (x1 + int(max_loc[0]), y1 + int(max_loc[1]))
 
@@ -166,6 +212,18 @@ class CrosshairKinematicsAnalyzer:
             self.previous_roi = roi.copy()
 
             if response < self.min_phase_response:
+                # Unreliable measurement (flat texture / motion blur). Keep the
+                # hold clocks alive briefly so one bad frame in the middle of
+                # a mechanical pan cannot reset the evidence; they expire on
+                # their own if the motion really stopped.
+                now_unreliable = float(timestamp) if timestamp is not None else (
+                    (self._last_timestamp or 0.0) + 1.0 / 60.0
+                )
+                self._last_timestamp = now_unreliable
+                for attr in ("_line_since", "_lock_since"):
+                    since = getattr(self, attr)
+                    if since is not None and (now_unreliable - since) > self.line_hold_seconds * 2.0:
+                        setattr(self, attr, None)
                 self.last_metrics = self._idle_metrics(point, {"flow_response": response})
                 return None
 
@@ -200,21 +258,57 @@ class CrosshairKinematicsAnalyzer:
             residuals = self._line_residuals(coords)
             residual_var = float(np.var(residuals))
             step_var = float(np.mean(np.var(deltas, axis=0))) if len(deltas) else 0.0
+            # Deviation from a straight line is the wrong tremor measure for a
+            # bot *tracking* a moving target: the path curves smoothly and
+            # residual_var reads 10-16 while the hand is doing nothing at all.
+            # Hand tremor is frame-to-frame *jerk*: the second difference of
+            # the path. A human tracking a curve still jitters (measured >=1.5
+            # on legit footage); a mechanical lock follows the curve exactly.
+            if len(deltas) >= 3:
+                accel = np.diff(deltas, axis=0)
+                jerk_variance = float(np.mean(np.var(accel, axis=0)))
+            else:
+                jerk_variance = step_var
             tremor_variance = max(residual_var, step_var)
             mean_velocity = float(np.mean(step_distances))
             max_step = float(np.max(step_distances))
 
-            if mean_velocity > self.velocity_threshold * 0.65 and tremor_variance <= self.zero_variance_epsilon:
+            smooth_lock = jerk_variance <= self.zero_variance_epsilon
+            if mean_velocity > self.velocity_threshold * 0.65 and (tremor_variance <= self.zero_variance_epsilon or smooth_lock):
                 self.zero_tremor_streak += 1
             else:
                 self.zero_tremor_streak = 0
 
+            now = float(timestamp) if timestamp is not None else (
+                (self._last_timestamp or 0.0) + 1.0 / 60.0
+            )
+            self._last_timestamp = now
+
+            # Straight-and-fast is the *raw* line condition. Humans satisfy it
+            # for a few frames on every flick, so it only becomes an event
+            # once it has held continuously for line_hold_seconds. A single
+            # oversized step (old snap_threshold rule) is not evidence on its
+            # own: legit flicks reach 47px at 960x540.
+            line_now = mean_velocity >= self.velocity_threshold and straightness >= self.straightness_threshold
+            if line_now:
+                if self._line_since is None:
+                    self._line_since = now
+            else:
+                self._line_since = None
+            line_held = self._line_since is not None and (now - self._line_since) >= self.line_hold_seconds
+
+            lock_now = self.zero_tremor_streak >= self.lock_streak and mean_velocity >= self.velocity_threshold * 0.65
+            if lock_now:
+                if self._lock_since is None:
+                    self._lock_since = now
+            else:
+                self._lock_since = None
+            lock_held = self._lock_since is not None and (now - self._lock_since) >= self.lock_hold_seconds
+
             event_type: Optional[str] = None
-            if mean_velocity >= self.velocity_threshold and straightness >= self.straightness_threshold:
+            if line_held:
                 event_type = "UNNATURAL_GEOMETRIC_LINE"
-            if max_step >= self.snap_threshold and straightness >= self.straightness_threshold:
-                event_type = "UNNATURAL_GEOMETRIC_LINE"
-            if self.zero_tremor_streak >= self.lock_streak and mean_velocity >= self.velocity_threshold * 0.65:
+            if lock_held:
                 event_type = "MECHANICAL_LOCK_NO_TREMOR"
 
             base = {
@@ -228,6 +322,8 @@ class CrosshairKinematicsAnalyzer:
                 "last_dx": dx,
                 "last_dy": dy,
                 "last_step": last_step,
+                "jerk_variance": jerk_variance,
+                "line_seconds": (now - self._line_since) if self._line_since is not None else 0.0,
                 "path": coords.tolist(),
                 "residuals": residuals.tolist(),
             }
@@ -241,7 +337,6 @@ class CrosshairKinematicsAnalyzer:
                 max(
                     straightness,
                     mean_velocity / max(self.velocity_threshold, 1e-4),
-                    max_step / max(self.snap_threshold, 1e-4),
                 ),
             )
             self.last_metrics = {

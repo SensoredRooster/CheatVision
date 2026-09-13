@@ -4,5 +4,8 @@
   "require_hud_energy": false,
   "hud_energy_stdev": 12.0,
   "hud_energy_frac": [],
+  "detection_ignore_frac": [
+    [0.30, 0.55, 0.72, 1.00]
+  ],
   "hud_mask_frac": []
 }

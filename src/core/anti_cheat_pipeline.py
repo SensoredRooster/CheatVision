@@ -153,8 +153,13 @@ class AntiCheatPipeline:
         self.set_source_profile(source_profile)
         self._prev_heads: dict[Any, tuple[float, float]] = {}
         self._sticky_hits: dict[Any, int] = {}
+        self._snap_latch: dict[str, Any] | None = None
+        # How long a landed snap keeps its verdict while the aim stays on the head.
+        self._snap_latch_seconds = 0.35
         self._flag_streak = 0
         self._flag_streak_type: str | None = None
+        self._flag_streak_since: float | None = None
+        self._flag_streak_reported = False
 
     @property
     def detector_ready(self) -> bool:
@@ -304,6 +309,8 @@ class AntiCheatPipeline:
 
             if self._is_excluded_region(x1, y1, x2, y2, cx, cy, analysis_w, analysis_h):
                 continue
+            if self.hud_masker.is_viewmodel_detection(x1, y1, x2, y2, width=analysis_w, height=analysis_h):
+                continue
             if self._exceeds_max_area(x1, y1, x2, y2, analysis_w, analysis_h):
                 continue
 
@@ -374,8 +381,10 @@ class AntiCheatPipeline:
             self.crosshair_analyzer.reset()
             self._prev_heads.clear()
             self._sticky_hits.clear()
+            self._snap_latch = None
             self.last_event_type = None
             self.last_mechanical_lock_detected = False
+            self._reset_flag_streak()
             self.last_telemetry_snapshot = self._idle_telemetry(self.scene_gate.reason)
             return None
         if raw:
@@ -406,6 +415,7 @@ class AntiCheatPipeline:
         px, py = analysis_point
         display_point = scale_point((px, py), (analysis_w, analysis_h), (display_w, display_h))
 
+        metrics["_timestamp"] = float(frame_context.timestamp)
         replica = self._score_replica_aim(metrics, tracked_entities_snapshot, (px, py), analysis_w)
         kinematic_flagged = bool(metrics.get("flagged"))
         if replica is not None:
@@ -416,8 +426,7 @@ class AntiCheatPipeline:
         elif not kinematic_flagged:
             self.last_event_type = None
             self.last_mechanical_lock_detected = False
-            self._flag_streak = 0
-            self._flag_streak_type = None
+            self._reset_flag_streak()
             return None
 
         self.last_event_type = str(metrics.get("event_type", "crosshair_kinematic_anomaly"))
@@ -453,16 +462,25 @@ class AntiCheatPipeline:
                 return None
             associated_track_id = best_match.get("track_id")
 
-        # Require sustained kinematics before logging a cheat event.
-        # Short legit pans at 60Hz analysis otherwise look perfectly straight.
-        min_persist = 3 if associated_track_id is not None else 15
-        if self._flag_streak_type == self.last_event_type:
+        # Require sustained kinematics before logging a cheat event. Measured
+        # in seconds so 60Hz and 144Hz sources behave the same: the analyser
+        # already demands a held line/lock, so this is a second, shorter
+        # confirmation. Target-corroborated events (aim landed on a tracked
+        # player) confirm quickly; free-space geometry needs longer.
+        min_persist_sec = 0.05 if associated_track_id is not None else 0.20
+        now = float(frame_context.timestamp)
+        if self._flag_streak_type == self.last_event_type and self._flag_streak_since is not None:
             self._flag_streak += 1
         else:
             self._flag_streak_type = self.last_event_type
             self._flag_streak = 1
-        if self._flag_streak < min_persist:
+            self._flag_streak_since = now
+        if (now - self._flag_streak_since) < min_persist_sec:
             return None
+        # One event per streak: re-arm only after the behaviour stops.
+        if self._flag_streak_reported:
+            return None
+        self._flag_streak_reported = True
 
         event = CheatEvent(
             timestamp=datetime.fromtimestamp(frame_context.timestamp).isoformat(),
@@ -502,8 +520,14 @@ class AntiCheatPipeline:
         self.crosshair_analyzer.reset()
         self._prev_heads.clear()
         self._sticky_hits.clear()
+        self._snap_latch = None
+        self._reset_flag_streak()
+
+    def _reset_flag_streak(self) -> None:
         self._flag_streak = 0
         self._flag_streak_type = None
+        self._flag_streak_since = None
+        self._flag_streak_reported = False
 
     def should_export_suspicious_clip(self) -> bool:
         return self.last_event_type in {"MECHANICAL_LOCK_NO_TREMOR", "SNAP_TO_TARGET", "STICKY_AIM"}
@@ -515,8 +539,8 @@ class AntiCheatPipeline:
         h = y2 - y1
         if h < 8 or w < 8:
             return None
-        hy = y1 + 0.20 * h
-        return ((x1 + x2) * 0.5, y1 + hy)
+        # Head sits ~20% down from the top of a standing person box.
+        return ((x1 + x2) * 0.5, y1 + 0.20 * h)
 
     def _score_replica_aim(
         self,
@@ -529,7 +553,7 @@ class AntiCheatPipeline:
         snap_min = 12.0 * scale
         land_px = 34.0 * scale
         sticky_err = 22.0 * scale
-        sticky_move = 10.0 * scale
+        sticky_cam_move = 4.0 * scale
         sticky_need = 6
         flick_px = 26.0 * scale
         rx, ry = float(reticle[0]), float(reticle[1])
@@ -537,6 +561,7 @@ class AntiCheatPipeline:
         dy = float(metrics.get("last_dy") or 0.0)
         last_step = float(metrics.get("last_step") or (dx * dx + dy * dy) ** 0.5)
         mean_velocity = float(metrics.get("velocity") or last_step)
+        now = float(metrics.get("_timestamp") or 0.0)
 
         heads: dict[Any, tuple[float, float]] = {}
         snap: dict[str, Any] | None = None
@@ -565,13 +590,14 @@ class AntiCheatPipeline:
                     confidence = min(1.0, 0.45 + last_step / (snap_min * 3.0) + (1.0 - err / max(land_px, 1.0)) * 0.4)
                     if snap is None or confidence > snap["confidence"]:
                         snap = {"event_type": "SNAP_TO_TARGET", "confidence": confidence, "track_id": track_id}
-            if err <= sticky_err and previous is not None:
-                moved = float((hx - previous[0]) ** 2 + (hy - previous[1]) ** 2) ** 0.5
-                if moved >= sticky_move:
-                    self._sticky_hits[track_id] = self._sticky_hits.get(track_id, 0) + 1
-                else:
-                    self._sticky_hits[track_id] = self._sticky_hits.get(track_id, 0)
-            else:
+            # Sticky aim: the reticle stays on the head *while the camera is
+            # moving*. With a perfect lock the head does not move on screen at
+            # all (the old rule demanded on-screen head motion, which is the
+            # opposite of what a lock looks like), so camera motion is the
+            # evidence that someone -- or something -- is actively tracking.
+            if err <= sticky_err and last_step >= sticky_cam_move:
+                self._sticky_hits[track_id] = self._sticky_hits.get(track_id, 0) + 1
+            elif err > sticky_err * 1.5:
                 self._sticky_hits[track_id] = 0
 
         for track_id in list(self._sticky_hits):
@@ -589,8 +615,19 @@ class AntiCheatPipeline:
                 break
 
         self._prev_heads = heads
+
+        # A snap is a one-frame event but the verdict must survive the
+        # persistence gate: latch it while the reticle stays on that head.
         if snap is not None:
+            self._snap_latch = {"track_id": snap["track_id"], "confidence": snap["confidence"], "since": now}
             return snap
+        latch = self._snap_latch
+        if latch is not None:
+            head = heads.get(latch["track_id"])
+            still_on = head is not None and float((head[0] - rx) ** 2 + (head[1] - ry) ** 2) ** 0.5 <= land_px
+            if still_on and (now - latch["since"]) <= self._snap_latch_seconds:
+                return {"event_type": "SNAP_TO_TARGET", "confidence": latch["confidence"], "track_id": latch["track_id"]}
+            self._snap_latch = None
         if sticky is not None:
             return sticky
         # Free flick without a player track is mostly mouse-turn noise on legit VODs.

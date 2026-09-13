@@ -19,6 +19,9 @@ class GameProfile:
     hud_energy_stdev: float
     hud_energy_frac: tuple[Frac, ...]
     hud_mask_frac: tuple[Frac, ...]
+    # Regions where a "person" detection is the player's own weapon/hands,
+    # never an enemy. Applied to detections only (not the kinematics ROI).
+    detection_ignore_frac: tuple[Frac, ...] = ()
 
 
 def _as_frac(values: Any) -> Frac:
@@ -41,6 +44,7 @@ def load_game_profile(profile_id: str, profiles_dir: Path | None = None) -> Game
         hud_energy_stdev=float(data.get("hud_energy_stdev", 12.0)),
         hud_energy_frac=tuple(_as_frac(item) for item in data.get("hud_energy_frac", [])),
         hud_mask_frac=tuple(_as_frac(item) for item in data.get("hud_mask_frac", [])),
+        detection_ignore_frac=tuple(_as_frac(item) for item in data.get("detection_ignore_frac", [])),
     )
 
 

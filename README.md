@@ -146,26 +146,55 @@ sprite.
 `CrosshairKinematicsAnalyzer` (`src/core/anomaly_detector.py`):
 
 1. HUD-mask the analysis frame; zero facecam / chrome / chat pixels.
-2. Take a center ROI (~22% of the frame).
-3. Phase-correlation vs the previous ROI → scene translation `(dx, dy)`.
-   Aim delta is the negation of that.
-4. Over an 18-sample window: path straightness =
-   displacement / path length; tremor = residual variance off a line fit.
-5. Flag `MECHANICAL_LOCK_NO_TREMOR` when velocity is high, straightness ≥ 0.985,
-   and tremor stays near zero for a lock streak.
+2. Take a center ROI (~22% of the frame). The reticle is the geometric centre
+   unless a clearly isolated bright mark sits within 12 px (the old refinement
+   chased random bright specks ±20 px per frame and injected fake tremor).
+3. Phase-correlation vs the previous ROI → scene translation `(dx, dy)`; aim
+   delta is the negation. Fine estimate from four edge bands (sub-pixel), plus
+   a coarse whole-ROI estimate that takes over when they disagree — the bands
+   cannot see a 60 px snap and used to report it as ~7 px.
+4. Over an 18-sample window: straightness = displacement / path length;
+   tremor = max(residual variance off a line, step variance); **jerk** =
+   variance of the second difference of the path (hand tremor while tracking a
+   *curving* target — a line fit reads a smooth curve as tremor 10–16 while
+   the hand is doing nothing).
+5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 16 px and straightness ≥ 0.985 held
+   **continuously for ≥ 0.25 s**. `MECHANICAL_LOCK_NO_TREMOR`: fast, with
+   tremor *or* jerk ≤ 0.45, for a lock streak held ≥ 0.12 s. Brief
+   measurement dropouts (flat texture) do not reset the hold clocks.
+
+**Why time-based.** Measured on 2560×1440@144 legit Warzone highlights
+(~5,600 analysed frames): straightness ≥ 0.985 occurs on 7–48 frames per clip
+(every flick is briefly perfectly straight), single steps reach 47 px at
+960×540, but tremor ≤ 0.45 while moving fast occurred **zero** times. So a
+single-window snapshot or a raw step size is not evidence; a *sustained*
+tremor-free or perfectly straight run is. Frame-count persistence also made
+60 Hz and 144 Hz sources behave differently; everything is now in seconds.
 
 Replica-aim (`AntiCheatPipeline._score_replica_aim`), using YOLO boxes when
-present:
+present. Detections whose centre falls in the game profile's
+`detection_ignore_frac` (the player's own weapon/hands, bottom-centre) are
+discarded first — the largest "person" YOLO finds in legit footage is the
+viewmodel.
 
 | event | idea |
 |---|---|
-| `SNAP_TO_TARGET` | large reticle step that lands on a player head |
-| `STICKY_AIM` | reticle stays on a moving head for ≥ 6 hits |
-| `FLICK_SNAP` | one step much larger than mean velocity |
+| `SNAP_TO_TARGET` | step ≥ 12 px that lands ≤ 34 px from a player head, moving toward where the head was; the verdict is latched for 0.35 s while the aim stays on that head so a one-frame snap survives the persistence gate |
+| `STICKY_AIM` | reticle stays ≤ 22 px from a head while the *camera* is moving, for ≥ 6 hits (a perfect lock keeps the head still on screen — camera motion is the evidence) |
+| `FLICK_SNAP` | one step much larger than mean velocity, landing near the nearest head |
 
 Kinematic flags without a replica event still require a YOLO box overlapping the
 reticle (plus corroboration margin) when the detector is ready — otherwise the
-event is dropped.
+event is dropped. A verdict must then persist 0.05 s (target-corroborated) or
+0.20 s (free-space) and is reported **once per streak**.
+
+Validation: `tests/test_aim_tracker.py` covers a jittery human flick (no flag)
+and bot line / curve-lock / snap-to-head patterns (must flag). The grey
+`clean_*.mp4` / `suspicious_*.mp4` clips under `data/` are the synthetic
+fixtures from `tools/make_synthetic_eval.py`, not captures — they smoke-test
+the math and are far easier than real footage. Precision is measured with
+`tools/import_dataset.py --analyze` on real legit VODs; recall against real
+cheats still needs labelled cheat footage.
 
 Events are `CheatEvent` JSONL lines under `logs/`. Suspicious clips can be
 exported when the type is snap / sticky / mechanical lock.
