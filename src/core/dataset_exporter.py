@@ -12,25 +12,39 @@ import numpy as np
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 
-_WRITER_CANDIDATES: tuple[tuple[str, str], ...] = (
-    (".mp4", "avc1"),
-    (".mp4", "H264"),
-    (".mp4", "mp4v"),
-    (".avi", "XVID"),
-    (".avi", "MJPG"),
-)
-
 
 def _even(value: int) -> int:
     value = max(2, int(value))
     return value if value % 2 == 0 else value - 1
 
 
+def _h264_available() -> bool:
+    names = (
+        "openh264-2.5.0-win64.dll",
+        "openh264-1.8.0-win64.dll",
+        "openh264.dll",
+    )
+    search = [Path.cwd(), Path(os.environ.get("SystemRoot", "C:\\Windows")) / "System32"]
+    for folder in search:
+        for name in names:
+            if (folder / name).is_file():
+                return True
+    return False
+
+
+def _writer_candidates() -> tuple[tuple[str, str], ...]:
+    codecs: list[tuple[str, str]] = []
+    if _h264_available():
+        codecs.extend([(".mp4", "avc1"), (".mp4", "H264")])
+    codecs.extend([(".mp4", "mp4v"), (".avi", "XVID"), (".avi", "MJPG")])
+    return tuple(codecs)
+
+
 def _open_video_writer(path_stem: Path, fps: float, width: int, height: int) -> tuple[cv2.VideoWriter | None, Path | None]:
     width = _even(width)
     height = _even(height)
     fps = max(1.0, float(fps))
-    for suffix, codec in _WRITER_CANDIDATES:
+    for suffix, codec in _writer_candidates():
         output_path = path_stem.with_suffix(suffix)
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
