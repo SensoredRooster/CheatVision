@@ -36,7 +36,6 @@ class CaptureWorker(QObject):
     threading.Event, which is safe to call from any thread.
     """
 
-    frameAvailable = Signal(int)
     sourceOpened = Signal(int, int, float, str)
     captureError = Signal(str)
     streamFrozen = Signal(bool)
@@ -54,17 +53,12 @@ class CaptureWorker(QObject):
         self._recent_frame_cache: deque[np.ndarray] = deque(maxlen=1)
         self._live_frame_timestamps: deque[float] = deque(maxlen=180)
         self._ffmpeg_capture: FFmpegRawVideoCapture | None = None
-        self._frame_signal_pending = False
         self._negotiated = (0, 0, 0.0)
         self._backend = ""
 
     def get_latest_context(self) -> FrameContext | None:
         with self._lock:
             return self._latest_context
-
-    def ack_frame_signal(self) -> None:
-        with self._lock:
-            self._frame_signal_pending = False
 
     def get_recent_frame_cache(self) -> list[np.ndarray]:
         with self._lock:
@@ -155,11 +149,6 @@ class CaptureWorker(QObject):
         with self._lock:
             self._latest_context = context
             self._recent_frame_cache.append(context.frame)
-            emit_now = not self._frame_signal_pending
-            if emit_now:
-                self._frame_signal_pending = True
-        if emit_now:
-            self.frameAvailable.emit(context.frame_id)
 
     def _clear_latest_frame(self) -> None:
         with self._lock:
@@ -253,7 +242,6 @@ class CaptureWorker(QObject):
 class PlaybackWorker(QObject):
     """Owns a mounted-VOD read loop with pause/resume/seek support."""
 
-    frameAvailable = Signal(int)
     sourceOpened = Signal(int, int, float, int)
     playbackFinished = Signal()
     playbackError = Signal(str)
@@ -269,16 +257,11 @@ class PlaybackWorker(QObject):
         self._seek_lock = threading.Lock()
         self._seek_target: int | None = None
         self._capture: cv2.VideoCapture | None = None
-        self._frame_signal_pending = False
         self.total_frames = 0
 
     def get_latest_context(self) -> FrameContext | None:
         with self._lock:
             return self._latest_context
-
-    def ack_frame_signal(self) -> None:
-        with self._lock:
-            self._frame_signal_pending = False
 
     @Slot()
     def start(self) -> None:
@@ -300,23 +283,13 @@ class PlaybackWorker(QObject):
 
         frame_delay = 1.0 / fps
         finished_naturally = False
-        waiting_on_ui = False
 
         while not self._stop_event.is_set():
-            if waiting_on_ui:
-                with self._lock:
-                    pending = self._frame_signal_pending
-                if pending:
-                    time.sleep(0.001)
-                    continue
-                waiting_on_ui = False
-
             with self._seek_lock:
                 seek_target = self._seek_target
                 self._seek_target = None
             if seek_target is not None:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, seek_target - 1))
-                waiting_on_ui = False
 
             if self._pause_event.is_set():
                 time.sleep(0.03)
@@ -338,9 +311,6 @@ class PlaybackWorker(QObject):
             )
             with self._lock:
                 self._latest_context = context
-                self._frame_signal_pending = True
-            self.frameAvailable.emit(frame_id)
-            waiting_on_ui = True
 
             elapsed = time.perf_counter() - start_time
             time.sleep(max(0.0, frame_delay - elapsed))
@@ -387,7 +357,6 @@ class PlaybackWorker(QObject):
             self._latest_context = context
         with self._seek_lock:
             self._seek_target = None
-        self.frameAvailable.emit(frame_id)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -414,6 +383,7 @@ class AnalysisWorker(QObject):
         self._capture_worker = capture_worker
         self._source: CaptureWorker | PlaybackWorker = capture_worker
         self._last_analyzed_frame_id = -1
+        self._stop_event = threading.Event()
 
     def set_source(self, source: CaptureWorker | "PlaybackWorker") -> None:
         with self._source_lock:
@@ -422,34 +392,38 @@ class AnalysisWorker(QObject):
                 self._capture_worker = source
             self._last_analyzed_frame_id = -1
 
-    @Slot(int)
-    def on_frame_available(self, frame_id: int) -> None:
-        with self._source_lock:
-            source = self._source
-            capture_worker = self._capture_worker
+    @Slot()
+    def start(self) -> None:
+        self._stop_event.clear()
+        while not self._stop_event.is_set():
+            with self._source_lock:
+                source = self._source
+                capture_worker = self._capture_worker
 
-        if isinstance(source, CaptureWorker):
-            source.ack_frame_signal()
-        ctx = source.get_latest_context()
-        if ctx is None or ctx.frame_id == self._last_analyzed_frame_id:
-            return
+            ctx = source.get_latest_context()
+            if ctx is None or ctx.frame_id == self._last_analyzed_frame_id:
+                time.sleep(0.001)
+                continue
 
-        if ctx.analysis_frame is None and self._pipeline.should_analyze_frame(ctx.frame_id):
-            ctx.analysis_frame = _downscale(ctx.frame, 960, 540)
+            if ctx.analysis_frame is None and self._pipeline.should_analyze_frame(ctx.frame_id):
+                ctx.analysis_frame = _downscale(ctx.frame, 960, 540)
 
-        event = self._pipeline.process_frame(frame_context=ctx)
-        with self._source_lock:
-            self._last_analyzed_frame_id = ctx.frame_id
+            event = self._pipeline.process_frame(frame_context=ctx)
+            with self._source_lock:
+                self._last_analyzed_frame_id = ctx.frame_id
 
-        telemetry = dict(self._pipeline.last_telemetry_snapshot or {})
-        telemetry["flagged"] = event is not None
-        self.telemetryUpdated.emit(telemetry)
+            telemetry = dict(self._pipeline.last_telemetry_snapshot or {})
+            telemetry["flagged"] = event is not None
+            self.telemetryUpdated.emit(telemetry)
 
-        if event is not None:
-            self.cheatEventDetected.emit(event)
-            if source is capture_worker and self._pipeline.should_export_suspicious_clip():
-                frames = capture_worker.get_recent_frame_cache()
-                self._dataset_exporter.export_suspicious_incident_clip(frames, event.frame_id)
+            if event is not None:
+                self.cheatEventDetected.emit(event)
+                if source is capture_worker and self._pipeline.should_export_suspicious_clip():
+                    frames = capture_worker.get_recent_frame_cache()
+                    self._dataset_exporter.export_suspicious_incident_clip(frames, event.frame_id)
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
 
 class DetectionWorker(QObject):

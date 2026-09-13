@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from PySide6.QtCore import Qt, QThread, QTimer, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QImage, QPainter
+from PySide6.QtGui import QCloseEvent, QColor, QPainter
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -272,6 +272,7 @@ class MainWindow(QMainWindow):
         self._analysis_worker.moveToThread(self._analysis_thread)
         self._analysis_worker.cheatEventDetected.connect(self._on_cheat_event_detected)
         self._analysis_worker.telemetryUpdated.connect(self._on_telemetry_updated)
+        self._analysis_thread.started.connect(self._analysis_worker.start)
         self._analysis_thread.start()
 
         detection_fps = int(self.settings.get("detection_fps", 30))
@@ -303,8 +304,6 @@ class MainWindow(QMainWindow):
         self._capture_worker.captureError.connect(self._on_capture_error)
         self._capture_worker.streamFrozen.connect(self._on_capture_stream_frozen)
         self._capture_worker.waitingForDevice.connect(self._on_waiting_for_capture)
-        self._capture_worker.frameAvailable.connect(self._on_live_frame_available)
-        self._capture_worker.frameAvailable.connect(self._analysis_worker.on_frame_available)
         self._capture_thread.started.connect(self._capture_worker.start)
 
     def _launch_capture(self, device: dict | None) -> None:
@@ -368,8 +367,6 @@ class MainWindow(QMainWindow):
         self._playback_thread = QThread(self)
         self._playback_worker.moveToThread(self._playback_thread)
         self._playback_worker.sourceOpened.connect(self._on_playback_source_opened)
-        self._playback_worker.frameAvailable.connect(self._on_playback_frame_available)
-        self._playback_worker.frameAvailable.connect(self._analysis_worker.on_frame_available)
         self._playback_worker.playbackFinished.connect(self._on_playback_finished)
         self._playback_worker.playbackError.connect(self._on_playback_error)
         self._playback_thread.started.connect(self._playback_worker.start)
@@ -582,11 +579,6 @@ class MainWindow(QMainWindow):
         else:
             self._render_frame(self._capture_worker, -1)
 
-    @Slot(int)
-    def _on_live_frame_available(self, frame_id: int) -> None:
-        if self._capture_worker is not None:
-            self._capture_worker.ack_frame_signal()
-
     @Slot(int, int, float, int)
     def _on_playback_source_opened(self, width: int, height: int, fps: float, total_frames: int) -> None:
         self.pipeline.update_target_resolution(width, height)
@@ -601,13 +593,6 @@ class MainWindow(QMainWindow):
             low_mode=int(height) < 720,
         )
         self._update_signal_card()
-
-    @Slot(int)
-    def _on_playback_frame_available(self, frame_id: int) -> None:
-        if self._playback_worker is not None:
-            self._playback_worker.ack_frame_signal()
-        ctx = self._playback_worker.get_latest_context() if self._playback_worker is not None else None
-        self.playback_controls.set_current_frame(ctx.frame_id if ctx is not None else frame_id)
 
     @Slot()
     def _on_playback_finished(self) -> None:
@@ -717,6 +702,8 @@ class MainWindow(QMainWindow):
         self._last_rendered_frame_id = ctx.frame_id
         self._last_rendered_gate_live = is_gate_live
         self._last_rendered_gate_reason = gate_reason
+        if source is self._playback_worker:
+            self.playback_controls.set_current_frame(ctx.frame_id)
 
         flagged_event = self._pending_flagged_event
         self._pending_flagged_event = None
@@ -758,9 +745,7 @@ class MainWindow(QMainWindow):
                 display_frame = _with_gate_chip(display_frame, gate_reason)
             if not display_frame.flags["C_CONTIGUOUS"]:
                 display_frame = display_frame.copy()
-            height, width = display_frame.shape[:2]
-            qimage = QImage(display_frame.data, width, height, display_frame.strides[0], QImage.Format_BGR888).copy()
-            self.video_canvas.set_frame(ctx, qimage)
+            self.video_canvas.set_frame(ctx, display_frame)
         except Exception as exc:
             render_error = f"canvas update failed: {exc!r}"
 
@@ -790,6 +775,8 @@ class MainWindow(QMainWindow):
             self._detection_thread.quit()
             self._detection_thread.wait(2000)
         if self._analysis_thread is not None:
+            if self._analysis_worker is not None:
+                self._analysis_worker.stop()
             self._analysis_thread.quit()
             self._analysis_thread.wait(2000)
         self.event_logger.log("Application closed")
