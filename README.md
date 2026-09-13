@@ -238,7 +238,6 @@ This section lists the tracked repository structure and what each folder/file do
 |---|---|
 | `.gitattributes` | Git attributes for repository file handling. |
 | `.gitignore` | Ignores generated/runtime files (for example local models, clip data, logs). |
-| `.kilo/kilo.jsonc` | Copilot cloud-agent config (`snapshot: false`). |
 | `README.md` | Main documentation and operational guide. |
 | `main.py` | Main entrypoint; launches the Qt app stack. |
 | `pyproject.toml` | Package metadata, Python requirement, pytest config, optional `train` dependency set. |
