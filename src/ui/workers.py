@@ -12,6 +12,13 @@ from src.core.anti_cheat_pipeline import AntiCheatPipeline, CheatEvent, FrameCon
 from src.core.dataset_exporter import PixelVisionDatasetExporter
 from src.core.frame_source import FFmpegRawVideoCapture, FrameSource
 
+_GATE_CHIP_FONT = cv2.FONT_HERSHEY_SIMPLEX
+_GATE_CHIP_FONT_SCALE = 0.45
+_GATE_CHIP_THICKNESS = 1
+_GATE_CHIP_PAD = 6
+_GATE_CHIP_TEXT_COLOR = (90, 220, 120)
+_GATE_CHIP_BG_COLOR = (10, 16, 12)
+
 
 def _downscale(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
     source_h, source_w = frame.shape[:2]
@@ -25,6 +32,39 @@ def _downscale(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
     target_w = max(1, int(source_w * scale))
     target_h = max(1, int(source_h * scale))
     return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+def _with_gate_chip(frame: np.ndarray, reason: str) -> np.ndarray:
+    if frame.size == 0:
+        return frame.copy()
+    canvas = frame.copy()
+    text = f"GATE:{reason}"
+    (text_w, text_h), baseline = cv2.getTextSize(
+        text,
+        _GATE_CHIP_FONT,
+        _GATE_CHIP_FONT_SCALE,
+        _GATE_CHIP_THICKNESS,
+    )
+    height, width = canvas.shape[:2]
+    x1 = min(_GATE_CHIP_PAD, max(0, width - 1))
+    y1 = min(_GATE_CHIP_PAD, max(0, height - 1))
+    x2 = min(width - 1, max(x1, x1 + text_w + _GATE_CHIP_PAD * 2))
+    y2 = min(height - 1, max(y1, y1 + text_h + baseline + _GATE_CHIP_PAD * 2))
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), _GATE_CHIP_BG_COLOR, -1)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), (35, 55, 40), 1)
+    text_x = min(max(x1 + _GATE_CHIP_PAD, 0), max(0, width - 1))
+    text_y = min(max(y1 + _GATE_CHIP_PAD + text_h, 0), max(0, height - 1))
+    cv2.putText(
+        canvas,
+        text,
+        (text_x, text_y),
+        _GATE_CHIP_FONT,
+        _GATE_CHIP_FONT_SCALE,
+        _GATE_CHIP_TEXT_COLOR,
+        _GATE_CHIP_THICKNESS,
+        cv2.LINE_AA,
+    )
+    return canvas
 
 
 class CaptureWorker(QObject):
@@ -449,6 +489,148 @@ class AnalysisWorker(QObject):
                 if source is capture_worker and self._pipeline.should_export_suspicious_clip():
                     frames = capture_worker.get_recent_frame_cache()
                     self._dataset_exporter.export_suspicious_incident_clip(frames, event.frame_id)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+
+class RenderWorker(QObject):
+    """Builds display frames off the UI thread from the latest source frame."""
+
+    frameReady = Signal(object)
+
+    def __init__(
+        self,
+        pipeline: AntiCheatPipeline,
+        live_overlay,
+        advanced_overlay,
+        source: CaptureWorker | PlaybackWorker,
+        target_fps: int = 60,
+    ):
+        super().__init__()
+        self._pipeline = pipeline
+        self._live_overlay = live_overlay
+        self._advanced_overlay = advanced_overlay
+        self._source_lock = threading.Lock()
+        self._source = source
+        self._target_fps = max(1, int(target_fps))
+        self._view_mode = "standard"
+        self._flagged_track_ids: tuple[int, ...] = ()
+        self._pending_flagged_event: CheatEvent | None = None
+        self._target_size = (320, 180)
+        self._render_revision = 0
+        self._stop_event = threading.Event()
+
+    def set_source(self, source: CaptureWorker | PlaybackWorker) -> None:
+        with self._source_lock:
+            self._source = source
+            self._render_revision += 1
+
+    def set_view_mode(self, mode: str) -> None:
+        with self._source_lock:
+            self._view_mode = mode
+            self._render_revision += 1
+
+    def set_flagged_track_ids(self, track_ids) -> None:
+        with self._source_lock:
+            self._flagged_track_ids = tuple(int(track_id) for track_id in track_ids)
+            self._render_revision += 1
+
+    def push_flagged_event(self, event: CheatEvent) -> None:
+        with self._source_lock:
+            self._pending_flagged_event = event
+            self._render_revision += 1
+
+    def set_target_size(self, width: int, height: int) -> None:
+        with self._source_lock:
+            self._target_size = (max(320, int(width)), max(180, int(height)))
+            self._render_revision += 1
+
+    @Slot()
+    def start(self) -> None:
+        self._stop_event.clear()
+        frame_interval = 1.0 / self._target_fps
+        last_seen_frame_id = -1
+        last_render_signature: tuple[int, bool, str, int] | None = None
+        next_render_at = 0.0
+
+        while not self._stop_event.is_set():
+            with self._source_lock:
+                source = self._source
+                revision = self._render_revision
+
+            timeout = max(0.0, next_render_at - time.monotonic()) if next_render_at > 0.0 else frame_interval
+            ctx = source.wait_for_frame(last_seen_frame_id, timeout=timeout)
+            if ctx is None:
+                ctx = source.get_latest_context()
+            if ctx is None:
+                continue
+            last_seen_frame_id = ctx.frame_id
+
+            gate_reason = self._pipeline.gate_reason()
+            is_gate_live = self._pipeline.is_gate_live()
+            signature = (ctx.frame_id, is_gate_live, gate_reason, revision)
+            now = time.monotonic()
+            if signature == last_render_signature and now < next_render_at:
+                continue
+            if now < next_render_at and last_render_signature is not None and revision == last_render_signature[3]:
+                continue
+
+            with self._source_lock:
+                flagged_event = self._pending_flagged_event
+                self._pending_flagged_event = None
+                view_mode = self._view_mode
+                flagged_track_ids = set(self._flagged_track_ids)
+                target_w, target_h = self._target_size
+
+            display_frame = self._pipeline.get_display_frame(ctx.frame)
+            render_error: str | None = None
+            try:
+                if is_gate_live:
+                    entities = self._pipeline.get_tracked_entities()
+                    needs_overlay = flagged_event is not None or bool(entities) or view_mode != "standard"
+                    if needs_overlay:
+                        display_frame = self._advanced_overlay.compile_display_frame(
+                            display_frame,
+                            entities,
+                            flagged_event,
+                            mode=view_mode,
+                            flagged_track_ids=flagged_track_ids,
+                        )
+                        flagged_id = flagged_event.telemetry_data.get("associated_track_id") if flagged_event else None
+                        if entities:
+                            display_frame = self._live_overlay.render_overlays(display_frame, entities, flagged_id=flagged_id)
+                source_h, source_w = display_frame.shape[:2]
+                if source_w > target_w or source_h > target_h:
+                    scale = min(target_w / source_w, target_h / source_h, 1.0)
+                    display_frame = cv2.resize(
+                        display_frame,
+                        (max(1, int(source_w * scale)), max(1, int(source_h * scale))),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                if not is_gate_live:
+                    display_frame = _with_gate_chip(display_frame, gate_reason)
+                if not display_frame.flags["C_CONTIGUOUS"]:
+                    display_frame = display_frame.copy()
+            except Exception as exc:
+                render_error = repr(exc)
+                display_frame = self._pipeline.get_display_frame(ctx.frame)
+                if not is_gate_live:
+                    display_frame = _with_gate_chip(display_frame, gate_reason)
+                if not display_frame.flags["C_CONTIGUOUS"]:
+                    display_frame = display_frame.copy()
+
+            self.frameReady.emit(
+                {
+                    "context": ctx,
+                    "frame": display_frame,
+                    "render_error": render_error,
+                    "is_gate_live": is_gate_live,
+                    "gate_reason": gate_reason,
+                }
+            )
+            last_render_signature = signature
+            next_render_at = time.monotonic() + frame_interval
 
     def stop(self) -> None:
         self._stop_event.set()
