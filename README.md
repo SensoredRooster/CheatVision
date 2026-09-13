@@ -228,23 +228,157 @@ coordinate-space scaling.
 
 ---
 
-## Layout
+## Complete repository map (folders + scripts)
 
-| path | role |
+This section lists the tracked repository structure and what each folder/file does.
+
+### Top level
+
+| path | purpose |
 |---|---|
-| `main.py` | entry |
-| `src/app.py` | Qt bootstrap + crash log |
-| `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, freeze, process-tree kill |
-| `src/core/scene_gate.py` | Live/Held hysteresis |
-| `src/core/anti_cheat_pipeline.py` | skip reasons, gate, kinematics, replica-aim, events |
-| `src/core/anomaly_detector.py` | phase-correlation aim |
-| `src/core/hud_masker.py` | fractional HUD mask, letterbox, HUD energy |
-| `src/core/game_profiles.py` | JSON HUD layouts |
-| `src/core/object_detector.py` | YOLO + IOU tracker |
-| `src/core/dataset_exporter.py` | clean baseline + flagged clips |
-| `src/core/train_workflow.py` | optional classifier |
-| `src/ui/main_window.py` | composition root, paint, GATE chip |
-| `src/ui/workers.py` | capture / playback / analysis / detection threads |
-| `config/settings.json` | defaults |
-| `config/game_profiles/` | `warzone.json`, `generic.json` |
-| `tests/` | unit tests |
+| `.gitattributes` | Git attributes for repository file handling. |
+| `.gitignore` | Ignores generated/runtime files (for example local models, clip data, logs). |
+| `.kilo/kilo.jsonc` | Copilot cloud-agent config (`snapshot: false`). |
+| `README.md` | Main documentation and operational guide. |
+| `main.py` | Main entrypoint; launches the Qt app stack. |
+| `pyproject.toml` | Package metadata, Python requirement, pytest config, optional `train` dependency set. |
+| `requirements.txt` | Runtime dependencies (plus `torch` note for retraining path). |
+
+### `config/`
+
+| path | purpose |
+|---|---|
+| `config/settings.json` | Primary runtime settings (capture mode/profile, model paths, YOLO toggles, FPS knobs). |
+| `config/game_profiles/warzone.json` | Warzone HUD/scene profile used by masking and scene gate logic. |
+| `config/game_profiles/generic.json` | Generic HUD/scene profile fallback for non-Warzone footage. |
+
+### `data/`
+
+| path | purpose |
+|---|---|
+| `data/README.md` | Dataset storage conventions (`raw`, `clean`, `suspicious`, labels, manifest). |
+| `data/labels_template.csv` | Template CSV to label clips before import. |
+| `data/manifest.csv` | Tracked clip inventory / metadata. |
+| `data/labels/example_label.json` | Example per-clip label JSON format. |
+| `data/eval_warzone_clean/labels.csv` | Example evaluation labels for a clean Warzone set. |
+| `data/models/.gitkeep` | Keeps `data/models` folder present in git. |
+| `data/models/README.md` | Notes for exporting local YOLO ONNX weights into `data/models/`. |
+
+### `src/`
+
+#### `src/` root
+
+| path | purpose |
+|---|---|
+| `src/__init__.py` | Package marker. |
+| `src/app.py` | App bootstrap: loads settings, builds main window, starts Qt event loop, crash handling. |
+
+#### `src/core/`
+
+| path | purpose |
+|---|---|
+| `src/core/__init__.py` | Package marker. |
+| `src/core/anti_cheat_pipeline.py` | Core orchestration: scene gating, kinematics, detector fusion, event creation, telemetry flow. |
+| `src/core/anomaly_detector.py` | Crosshair/camera-motion kinematics analyzer (straightness, tremor, lock patterns). |
+| `src/core/frame_source.py` | Video/capture source handling (ffmpeg DirectShow, screen capture, probe ladder, freeze detection). |
+| `src/core/scene_gate.py` | Live/Held state machine and hysteresis logic for non-gameplay suppression. |
+| `src/core/hud_masker.py` | HUD-aware masking and energy checks used by gate and analyzer. |
+| `src/core/object_detector.py` | Player detector wrapper (ONNX runtime inference + simple tracking/filtering). |
+| `src/core/live_overlay.py` | Overlay composition helpers for live rendering. |
+| `src/core/game_profiles.py` | Loader/validation for profile JSON definitions. |
+| `src/core/event_logger.py` | Persists flagged events and related records to disk. |
+| `src/core/dataset_exporter.py` | Exports clean baseline and suspicious segments for review/training pipelines. |
+| `src/core/dataset_loader.py` | Converts labeled clips into feature tensors for model training. |
+| `src/core/model_trainer.py` | Trains `PixelVisionClassifier` (PyTorch) and exports ONNX classifier artifact. |
+| `src/core/train_workflow.py` | End-to-end validation/training workflow runner over `data/clean` + `data/suspicious`. |
+
+#### `src/ui/`
+
+| path | purpose |
+|---|---|
+| `src/ui/__init__.py` | Package marker. |
+| `src/ui/main_window.py` | Main composition root for controls, canvas, worker startup, and UI signal wiring. |
+| `src/ui/workers.py` | Thread workers for capture/playback/analysis/detection/render loops. |
+| `src/ui/video_canvas.py` | Display surface for prepared frames (latest-frame paint model). |
+| `src/ui/control_bar.py` | Top controls (source switching, VOD import/rescan, profile and display settings). |
+| `src/ui/left_rail.py` | Left rail status widgets (SOURCE/SIGNAL/DETECT/PROFILE). |
+| `src/ui/incident_queue.py` | Incident queue table UI and interactions. |
+| `src/ui/playback_controls.py` | Playback-specific controls and seek interactions. |
+| `src/ui/telemetry_graph.py` | Compact telemetry graph rendering for signal trends. |
+| `src/ui/advanced_overlay.py` | Additional overlay drawing controls/logic. |
+| `src/ui/theme.py` | Shared colors, style constants, and visual defaults. |
+
+### `tests/`
+
+| path | purpose |
+|---|---|
+| `tests/test_aim_tracker.py` | Kinematics and aim-tracker behavior tests. |
+| `tests/test_coordinate_space.py` | Coordinate conversion/scaling tests between analysis and display spaces. |
+| `tests/test_game_profiles.py` | Game profile loading/validation tests. |
+| `tests/test_scene_gate.py` | Scene gate hysteresis and skip-reason behavior tests. |
+
+### `tools/` (scripts users should run directly)
+
+| script | purpose | typical usage |
+|---|---|---|
+| `tools/import_dataset.py` | Imports labeled clips into `data/clean` and `data/suspicious`, optionally analyzes and writes eval report. | `python tools/import_dataset.py --input <clips> --labels <csv> --output data --analyze --report data/eval_report.json` |
+| `tools/make_synthetic_eval.py` | Generates synthetic clean/suspicious clips for smoke-testing the pipeline and labels CSV. | `python tools/make_synthetic_eval.py --out data/eval_synthetic` |
+| `tools/export_player_model.py` | Exports YOLO weights to ONNX for runtime detector (`data/models/yolov8n.onnx`). | `python tools/export_player_model.py` |
+| `tools/fetch_anticheatpt.py` | Prints dataset guidance and command examples (no broken auto-download behavior). | `python tools/fetch_anticheatpt.py` |
+
+### Batch files (`*.bat`)
+
+There are currently **no tracked `.bat` files** in this repository.
+
+---
+
+## Model training process (end-to-end)
+
+Use this if you want to maintain or retrain classifier artifacts from your own clips.
+
+1. **Install runtime dependencies**
+   - `pip install -r requirements.txt`
+2. **Install training dependency**
+   - `pip install torch`
+3. **Prepare labeled clips**
+   - Put raw clips under a folder (example: `data/raw/`).
+   - Fill labels CSV using `data/labels_template.csv` fields.
+4. **Import + optional pre-evaluation**
+   - `python tools/import_dataset.py --input data/raw --labels data/labels_template.csv --output data --analyze --report data/eval_report.json`
+   - This organizes clips into `data/clean/` and `data/suspicious/` and can produce eval metrics/report JSON.
+5. **Run training workflow**
+   - `python src/core/train_workflow.py`
+   - Workflow verifies inventory balance, compiles feature tensors with `dataset_loader`, then trains via `model_trainer`.
+6. **Training output artifacts**
+   - `data/models/cheatvision_detector.onnx` (classifier output from `model_trainer.py`).
+   - Optional detector export path can produce YOLO ONNX in `data/models/` via `tools/export_player_model.py`.
+7. **Re-test after training**
+   - `python -m unittest discover -s tests -v`
+   - Then run app and validate with representative VOD/live captures.
+
+### Quick synthetic smoke path (no real clips required)
+
+```bash
+python tools/make_synthetic_eval.py --out data/eval_synthetic
+python tools/import_dataset.py --input data/eval_synthetic/clips --labels data/eval_synthetic/labels.csv --output data --analyze --report data/eval_synthetic/eval_report.json
+```
+
+---
+
+## Keep CheatVision running at its best (operations checklist)
+
+1. **Use the right source profile**
+   - HDMI capture card: `hdmi_game`
+   - Stream window / VOD overlays/chat: `stream_window` or `vod_file`
+2. **Keep detector weights updated**
+   - Ensure `player_detector_model_path` points to a valid ONNX file in `data/models/`.
+3. **Tune capture stability first**
+   - Let capture AUTO mode settle on a stable HD mode before judging detector behavior.
+4. **Maintain clean vs suspicious dataset balance**
+   - Avoid heavy class imbalance before retraining.
+5. **Run tests after config/profile changes**
+   - `python -m unittest discover -s tests -v`
+6. **Watch logs and incident queue regularly**
+   - Validate flagged categories against actual footage and adjust dataset/threshold strategy as needed.
+7. **Rebuild models intentionally**
+   - Retrain only after adding enough representative clips; do not rely only on synthetic data for production tuning.
