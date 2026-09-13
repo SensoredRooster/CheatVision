@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.incident_queue import IncidentQueueTable
 from src.ui.theme import ACCENT, ACCENT_DIM, ALERT, HAIRLINE, TEXT_MUTED, VOD_ACCENT, WARNING
 
 
@@ -122,9 +123,12 @@ class RailSection(QFrame):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(12, 10, 12, 10)
         self.layout.setSpacing(6)
-        heading = QLabel(title.upper())
-        heading.setObjectName("RailCardTitle")
-        self.layout.addWidget(heading)
+        self._heading = QLabel(title.upper())
+        self._heading.setObjectName("RailCardTitle")
+        self.layout.addWidget(self._heading)
+
+    def set_title(self, title: str) -> None:
+        self._heading.setText(title.upper())
 
     def add_row(self, widget: QWidget) -> None:
         self.layout.addWidget(widget)
@@ -155,9 +159,11 @@ class LeftRail(QWidget):
         self._source_name.setObjectName("RailCardBody")
         self._source_name.setWordWrap(True)
         self._source_mode = MetricRow("Mode")
+        self._source_feed = MetricRow("Feed")
         self._source_backend = MetricRow("Pipe")
         self.source.add_row(self._source_name)
         self.source.add_row(self._source_mode)
+        self.source.add_row(self._source_feed)
         self.source.add_row(self._source_backend)
         root.addWidget(self.source)
 
@@ -198,7 +204,25 @@ class LeftRail(QWidget):
         self.profile.add_row(self._baseline_row)
         root.addWidget(self.profile)
 
-        root.addStretch(1)
+        # Flagged events live here (the only place), filling the rest of the
+        # rail; double-click a row to seek a mounted VOD to that frame.
+        self.incidents = RailSection("Incidents · 0")
+        self.incident_table = IncidentQueueTable(self)
+        self.incident_table.setMinimumHeight(90)
+        self.incident_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.incidents.add_row(self.incident_table)
+        root.addWidget(self.incidents, 1)
+        self._incident_count = 0
+
+    def add_incident(self, event) -> None:
+        self._incident_count += 1
+        self.incident_table.add_event(event)
+        self.incidents.set_title(f"Incidents · {self._incident_count}")
+
+    def clear_incidents(self) -> None:
+        self._incident_count = 0
+        self.incident_table.clear()
+        self.incidents.set_title("Incidents · 0")
 
     def set_source(self, name: str, mode: str, backend: str, *, low_mode: bool = False) -> None:
         self._source_name.setText(name or "—")
@@ -207,6 +231,17 @@ class LeftRail(QWidget):
         else:
             self._source_mode.set_value(mode or "—")
         self._source_backend.set_value(backend or "—")
+        self._source_feed.set_value("—")
+
+    def set_feed_rate(self, delivered_fps: float, unique_fps: float, *, starved: bool = False) -> None:
+        """Real frame rate arriving from the device (vs. the requested mode)."""
+        if delivered_fps <= 0:
+            self._source_feed.set_value("—")
+            return
+        text = f"{delivered_fps:.0f} fps"
+        if unique_fps > 0 and unique_fps < delivered_fps - 2:
+            text += f" ({unique_fps:.0f} new)"
+        self._source_feed.set_value(text, alert=starved)
 
     def set_signal(self, *, frozen: bool, straightness: float, tremor: float) -> None:
         if frozen:

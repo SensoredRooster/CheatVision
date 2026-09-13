@@ -37,11 +37,7 @@ QLabel#StatusLabel {{
     color: {TEXT_PRIMARY};
     font-size: 11px;
     font-weight: bold;
-}}
-
-QLabel#EventCountLabel {{
-    color: {TEXT_MUTED};
-    font-size: 12px;
+    padding: 0 8px;
 }}
 
 QPushButton {{
@@ -217,18 +213,6 @@ QWidget#Sparkline {{
     border-radius: 4px;
 }}
 
-QWidget#IncidentsDrawer {{
-    background-color: {PANEL};
-    border-left: 1px solid {HAIRLINE};
-}}
-
-QLabel#IncidentCollapseLabel {{
-    background-color: {PANEL};
-    color: {TEXT_MUTED};
-    font-size: 10px;
-    font-weight: bold;
-}}
-
 QComboBox {{
     background-color: {PANEL};
     color: {ACCENT};
@@ -287,10 +271,5 @@ QHeaderView::section {{
     border: none;
     font-size: 10px;
     font-weight: bold;
-}}
-
-QStatusBar {{
-    background-color: {SURFACE};
-    color: {TEXT_PRIMARY};
 }}
 """

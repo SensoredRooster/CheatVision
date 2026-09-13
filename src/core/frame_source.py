@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 import subprocess
 import threading
@@ -117,8 +118,8 @@ _FPS_STEP_LADDER = (144.0, 120.0, 90.0, 85.0, 75.0, 60.0, 50.0, 30.0, 24.0)
 # per-resolution search too early skips right past slower-but-clean options
 # (measured on real hardware: 1920x1080@90 overflows but @75-85 is clean) in
 # favor of dropping to a much smaller resolution unnecessarily.
-_MAX_FPS_CANDIDATES_PER_RESOLUTION = len(_FPS_STEP_LADDER)
-_MAX_CALIBRATION_CANDIDATES = 40
+_MAX_FPS_CANDIDATES_PER_RESOLUTION = 2
+_MAX_CALIBRATION_CANDIDATES = 8
 _CALIBRATION_FPS_TOLERANCE = 0.5
 # A short test window is unreliable near the real bandwidth cliff: ffmpeg's
 # 256M rtbufsize buffer takes time to visibly overflow, and a borderline
@@ -130,6 +131,10 @@ _CALIBRATION_FPS_TOLERANCE = 0.5
 _CALIBRATION_TEST_DURATION_SEC = 2.5
 _CALIBRATION_SETTLE_SEC = 0.35
 _CALIBRATION_MIN_FPS_RATIO = 0.92
+# With -fps_mode passthrough the pipe carries only frames the driver really
+# produced, so a candidate is judged on steady delivery rather than on hitting
+# the nominal rate: anything at or above this is a healthy live feed.
+_CALIBRATION_MIN_ABSOLUTE_FPS = 50.0
 
 # The ffmpeg(dshow) process + reader-thread/event handoff needs real time
 # after isOpened() to reach steady-state frame delivery -- the first stretch
@@ -144,16 +149,14 @@ _CALIBRATION_MIN_FPS_RATIO = 0.92
 # other machines/devices don't reintroduce the same false-fail.
 _CALIBRATION_WARMUP_SEC = 1.0
 
-# Empirically measured on this exact hardware (manual FFmpegRawVideoCapture
-# testing against the real AVerMedia GC573): 1920x1080 bgr24 sustains cleanly
-# at 85fps (~529MB/s raw) but overflows at 90fps (~560MB/s raw) -- the true
-# bandwidth cliff sits somewhere in that gap. Any candidate whose raw
-# bgr24 byte rate clears this conservative mid-gap ceiling is virtually
-# guaranteed to overflow, so it's skipped before ever spending a real
-# hardware probe on it. This is a pre-filter on candidate *order*, not a
-# substitute for verification -- every candidate at or under the ceiling
-# still goes through the full two-phase hardware test below.
-_BANDWIDTH_CEILING_BYTES_PER_SEC = 545_000_000
+# Measured on this exact hardware (AVerMedia GC573, ffmpeg dshow -> raw pipe
+# -> unbuffered readinto): 2560x1440 bgr24 at 144fps (~1.59GB/s raw) sustains
+# for the full test window with zero "real-time buffer too full" drops. The
+# old ~545MB/s cliff was an artifact of reading the pipe through Python's
+# BufferedReader, not a device or OS limit. Any candidate whose raw bgr24 byte
+# rate clears this ceiling is skipped before spending a real hardware probe on
+# it; everything under it still goes through the full strict hardware test.
+_BANDWIDTH_CEILING_BYTES_PER_SEC = 1_700_000_000
 
 # Freeze detection: a stream is only "frozen" once consecutive downscaled
 # grayscale samples stay near-identical (mean absdiff below threshold) for a
@@ -161,15 +164,22 @@ _BANDWIDTH_CEILING_BYTES_PER_SEC = 545_000_000
 # trip this, only a real stuck signal.
 _FREEZE_ABSDIFF_THRESHOLD = 1.5
 _FREEZE_HOLD_FRAMES = 90
-_FREEZE_SAMPLE_MAX_WIDTH = 320
+# Frame-based hold alone shrinks to ~0.6s at 144fps, which trips on ordinary
+# menus/loading screens; hold for at least this long regardless of rate.
+_FREEZE_HOLD_SECONDS = 1.5
+_FREEZE_SAMPLE_SIZE = (320, 180)
 _PREVIEW_MAX_WIDTH = 2560
-_PREVIEW_MAX_FPS = 60
 _MIN_AUTO_HEIGHT = 720
-_PREFERRED_AUTO_MODES = ((1920, 1080, 60.0), (2560, 1440, 60.0))
+# Frames used to estimate the driver's real delivery rate.
+_RATE_WINDOW_FRAMES = 120
+# How long read() blocks waiting for the reader thread to publish a new frame
+# before reporting "no frame yet" back to the capture loop.
+_READ_WAIT_TIMEOUT_SEC = 0.02
 
 
 def _preview_geometry(width: int, height: int, fps: int) -> tuple[int, int, int]:
-    out_fps = min(max(1, int(fps)), _PREVIEW_MAX_FPS)
+    # The pipe is delivered at the device's real rate; never cap the reported fps.
+    out_fps = max(1, int(fps))
     if width <= _PREVIEW_MAX_WIDTH:
         out_w, out_h = max(2, int(width)), max(2, int(height))
     else:
@@ -185,13 +195,11 @@ def _preview_geometry(width: int, height: int, fps: int) -> tuple[int, int, int]
 
 
 def _freeze_sample(frame: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    height, width = gray.shape[:2]
-    if width <= _FREEZE_SAMPLE_MAX_WIDTH:
-        return gray
-    scale = _FREEZE_SAMPLE_MAX_WIDTH / width
-    target_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-    return cv2.resize(gray, target_size, interpolation=cv2.INTER_AREA)
+    # Nearest-neighbour sampling is ~50x cheaper than an area filter and is
+    # sufficient here: a genuinely frozen raw signal gives identical samples,
+    # while live gameplay differs on almost every sampled pixel.
+    small = cv2.resize(frame, _FREEZE_SAMPLE_SIZE, interpolation=cv2.INTER_NEAREST)
+    return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
 
 def _subprocess_no_window() -> int:
@@ -205,15 +213,54 @@ def _subprocess_no_window() -> int:
     return flags
 
 
-def _stop_ffmpeg_process(process: subprocess.Popen[bytes] | None) -> None:
+# Kernel-side pipe buffer between ffmpeg and the reader. The default
+# subprocess pipe holds ~32KB, so ffmpeg blocks after every 32KB write and a
+# 2560x1440 frame takes ~340 ReadFile calls (each one re-taking the GIL); the
+# moment the reader is briefly busy, ffmpeg stalls and its real-time buffer
+# starts dropping frames. With several frames of kernel buffering ffmpeg never
+# blocks, and a reader that fell behind drains a whole frame per call.
+_PIPE_BUFFER_BYTES = 64 * 1024 * 1024
+
+
+def _open_frame_pipe(frame_size: int):
+    """Return (child_stdout, reader) for ffmpeg's stdout.
+
+    On Windows this builds a pipe with a large kernel buffer; elsewhere the
+    caller falls back to a normal subprocess.PIPE.
+    """
+    if sys.platform != "win32":
+        return subprocess.PIPE, None
+    import _winapi
+    import msvcrt
+
+    buffer_bytes = max(_PIPE_BUFFER_BYTES, frame_size * 4)
+    read_handle, write_handle = _winapi.CreatePipe(None, buffer_bytes)
+    child_fd = msvcrt.open_osfhandle(write_handle, 0)
+    read_fd = msvcrt.open_osfhandle(read_handle, os.O_RDONLY | os.O_BINARY)
+    reader = os.fdopen(read_fd, "rb", buffering=0)
+    return child_fd, reader
+
+
+def _stop_ffmpeg_process(process: subprocess.Popen[bytes] | None, graceful_timeout: float = 3.0) -> bool:
+    """Stop ffmpeg, politely first. Returns True once the process has exited.
+
+    Terminating ffmpeg while its DirectShow graph is streaming can leave the
+    AVerMedia driver's close routine hung in the kernel: the process becomes
+    an unkillable zombie that still owns the device, and every later open
+    (ours or OBS's) fails with "device already in use" until a reboot. ffmpeg
+    stops the graph cleanly when it reads 'q' on stdin, so that always goes
+    first; a hard kill is the fallback only.
+    """
     if process is None:
-        return
-    pid = process.pid
-    for pipe in (process.stdin, process.stdout, process.stderr):
-        if pipe is None:
-            continue
+        return True
+    if process.poll() is None and process.stdin is not None:
         try:
-            pipe.close()
+            process.stdin.write(b"q\n")
+            process.stdin.flush()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=graceful_timeout)
         except Exception:
             pass
     if process.poll() is None:
@@ -221,21 +268,165 @@ def _stop_ffmpeg_process(process: subprocess.Popen[bytes] | None) -> None:
             process.kill()
         except Exception:
             pass
-    if sys.platform == "win32" and pid:
+        if sys.platform == "win32" and process.pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    capture_output=True,
+                    check=False,
+                    timeout=3,
+                    creationflags=_subprocess_no_window(),
+                )
+            except Exception:
+                pass
         try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                check=False,
-                timeout=3,
-                creationflags=_subprocess_no_window(),
-            )
+            process.wait(timeout=2.0)
         except Exception:
             pass
+    exited = process.poll() is not None
+    if not exited:
+        _remember_lingering(process)
+    return exited
+
+
+# ffmpeg processes that refused to exit (see _stop_ffmpeg_process). A new
+# capture must not be opened while one of these still holds the device.
+_LINGERING_LOCK = threading.Lock()
+_LINGERING: list[subprocess.Popen[bytes]] = []
+_LINGERING_WAIT_SEC = 8.0
+
+
+def _run_ffmpeg_query(command: list[str], timeout: float = 8.0) -> str:
     try:
-        process.wait(timeout=1.0)
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=_subprocess_no_window(),
+        )
+    except OSError:
+        return ""
+    stdout = stderr = b""
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _stop_ffmpeg_process(process, graceful_timeout=2.0)
+        try:
+            stdout, stderr = process.communicate(timeout=1.0)
+        except Exception:
+            stdout = stderr = b""
+    return (stdout or b"").decode("utf-8", errors="replace") + "\n" + (stderr or b"").decode("utf-8", errors="replace")
+
+
+def _remember_lingering(process: subprocess.Popen[bytes]) -> None:
+    with _LINGERING_LOCK:
+        if process not in _LINGERING:
+            _LINGERING.append(process)
+
+
+def _wait_for_lingering_ffmpeg(timeout: float = _LINGERING_WAIT_SEC) -> int:
+    """Block (bounded) until earlier ffmpeg instances have really exited.
+
+    Returns the number still alive afterwards.
+    """
+    deadline = time.time() + timeout
+    while True:
+        with _LINGERING_LOCK:
+            _LINGERING[:] = [proc for proc in _LINGERING if proc.poll() is None]
+            remaining = len(_LINGERING)
+        if remaining == 0 or time.time() >= deadline:
+            if remaining:
+                print(f"[CAPTURE] [WARN] {remaining} previous ffmpeg process(es) still shutting down; device may be busy")
+            return remaining
+        time.sleep(0.05)
+
+
+def _create_kill_on_close_job():
+    """Windows job object that kills every assigned process when the app dies.
+
+    Without it, a crash or Task-Manager kill of the app leaves ffmpeg running
+    invisibly with the capture card open, and the next launch is starved.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+            )]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JobObjectExtendedLimitInformation = 9
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        ok = kernel32.SetInformationJobObject(
+            job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if not ok:
+            kernel32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def _assign_to_job(job, process: subprocess.Popen[bytes]) -> None:
+    if job is None or sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.AssignProcessToJobObject(job, int(process._handle))
     except Exception:
         pass
+
+
+_FFMPEG_JOB = _create_kill_on_close_job()
+
+
+def _close_ffmpeg_pipes(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None:
+        return
+    for pipe in (process.stdin, process.stdout, process.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except Exception:
+            pass
 
 
 class FFmpegRawVideoCapture:
@@ -247,22 +438,27 @@ class FFmpegRawVideoCapture:
         self.width, self.height, self.fps = _preview_geometry(self.input_width, self.input_height, self.input_fps)
         self._frame_size = self.width * self.height * 3
         self._process: subprocess.Popen[bytes] | None = None
+        self._stdout = None
         self._reader_thread: threading.Thread | None = None
         self._reader_stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._frame_condition = threading.Condition(self._lock)
         self._latest_frame: np.ndarray | None = None
         self._latest_frame_seq = 0
         self._last_read_seq = 0
-        self._frame_ready_event = threading.Event()
+        self._latest_is_duplicate = False
+        self.last_read_duplicate = False
+        self._arrival_times: deque[float] = deque(maxlen=_RATE_WINDOW_FRAMES)
         self._stderr_thread: threading.Thread | None = None
         self._last_error_lines: deque[str] = deque(maxlen=20)
         self._freeze_sample: np.ndarray | None = None
         self._freeze_hold_count = 0
+        self._freeze_hold_frames = max(_FREEZE_HOLD_FRAMES, int(round(_FREEZE_HOLD_SECONDS * self.fps)))
         self._stream_frozen = False
         self._open()
 
     def _open(self) -> None:
-        input_spec = f"video={self.device_name}"
+        _wait_for_lingering_ffmpeg()
         command = [
             "ffmpeg",
             "-hide_banner",
@@ -273,35 +469,46 @@ class FFmpegRawVideoCapture:
             "nobuffer+igndts",
             "-flags",
             "low_delay",
-            "-thread_queue_size",
-            "8",
-            "-rtbufsize",
-            "8M",
-            "-f",
-            "dshow",
-            "-framerate",
-            str(self.input_fps),
-            "-video_size",
-            f"{self.input_width}x{self.input_height}",
-            "-i",
-            input_spec,
+            *self._input_args(),
             "-an",
             "-vf",
-            f"bwdif=mode=send_frame:parity=auto:deint=interlaced,fps={self.fps},scale={self.width}:{self.height}:flags=fast_bilinear,format=bgr24",
+            self._video_filter(),
             "-pix_fmt",
             "bgr24",
+            # passthrough: emit exactly the frames the driver produced. The
+            # default constant-frame-rate mode pads the output up to the
+            # requested rate by repeating frames (measured: the GC573 driver
+            # yields ~70 frames/s at 2560x1440 and ffmpeg was duplicating
+            # every one of them to reach "144"), which doubles the work in
+            # every stage downstream without adding a single new picture.
+            "-fps_mode",
+            "passthrough",
             "-f",
             "rawvideo",
             "-",
         ]
-        self._process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=self._frame_size * 2,
-            creationflags=_subprocess_no_window(),
-        )
+        # bufsize=0 is essential: Python's BufferedReader on top of the pipe
+        # tops out well under the ~1.6 GB/s a 2560x1440@144 bgr24 stream
+        # needs, which makes ffmpeg's real-time buffer fill up (latency) and
+        # then drop frames (skips). Reading straight from the raw pipe into a
+        # preallocated frame sustains the full rate with zero drops.
+        child_stdout, reader = _open_frame_pipe(self._frame_size)
+        try:
+            self._process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=child_stdout,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+                creationflags=_subprocess_no_window(),
+            )
+        finally:
+            if reader is not None:
+                # The child now owns its copy of the write end; ours must go
+                # or the reader would never see EOF when ffmpeg exits.
+                os.close(child_stdout)
+        _assign_to_job(_FFMPEG_JOB, self._process)
+        self._stdout = reader if reader is not None else self._process.stdout
         self._last_error_lines.clear()
         self._reader_stop_event.clear()
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
@@ -309,14 +516,73 @@ class FFmpegRawVideoCapture:
         self._stderr_thread = threading.Thread(target=self._stderr_drain_loop, daemon=True)
         self._stderr_thread.start()
 
-    def _stderr_drain_loop(self) -> None:
-        if self._process is None or self._process.stderr is None:
-            return
+    def device_busy(self) -> bool:
+        """True when ffmpeg reported the DirectShow device is held by another client."""
+        if self.isOpened():
+            return False
+        text = self.get_last_error().lower()
+        return "already in use" in text or "resource busy" in text
 
-        for line in iter(self._process.stderr.readline, b""):
-            text = line.decode("utf-8", errors="replace").strip()
-            if text:
-                self._last_error_lines.append(text)
+    def measured_fps(self) -> float:
+        """Rate at which the driver is actually delivering frames (0 until known)."""
+        with self._lock:
+            times = list(self._arrival_times)
+        if len(times) < 2:
+            return 0.0
+        elapsed = times[-1] - times[0]
+        if elapsed <= 0:
+            return 0.0
+        return (len(times) - 1) / elapsed
+
+    def _input_args(self) -> list[str]:
+        """ffmpeg input section; subclasses may substitute a non-device source."""
+        return [
+            "-thread_queue_size",
+            "512",
+            "-rtbufsize",
+            "256M",
+            "-f",
+            "dshow",
+            "-framerate",
+            str(self.input_fps),
+            "-video_size",
+            f"{self.input_width}x{self.input_height}",
+            "-i",
+            f"video={self.device_name}",
+        ]
+
+    def _video_filter(self) -> str:
+        filters: list[str] = []
+        if self.width != self.input_width or self.height != self.input_height:
+            filters.append(
+                f"scale={self.width}:{self.height}:flags=lanczos+accurate_rnd+full_chroma_int"
+            )
+        filters.append("format=bgr24")
+        return ",".join(filters)
+
+    def _stderr_drain_loop(self) -> None:
+        stderr = None
+        try:
+            process = self._process
+            if process is not None:
+                stderr = process.stderr
+        except Exception:
+            return
+        if stderr is None:
+            return
+        try:
+            while not self._reader_stop_event.is_set():
+                try:
+                    line = stderr.readline()
+                except (ValueError, OSError):
+                    break
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    self._last_error_lines.append(text)
+        except (ValueError, OSError):
+            return
 
     def get_last_error(self) -> str:
         if self._last_error_lines:
@@ -324,64 +590,84 @@ class FFmpegRawVideoCapture:
         return ""
 
     def _reader_loop(self) -> None:
-        if self._process is None or self._process.stdout is None:
+        process = self._process
+        stdout = self._stdout
+        if process is None or stdout is None:
             return
 
-        while not self._reader_stop_event.is_set() and self._process.poll() is None:
-            raw = bytearray()
-            while len(raw) < self._frame_size and not self._reader_stop_event.is_set() and self._process.poll() is None:
-                chunk = self._process.stdout.read(self._frame_size - len(raw))
-                if not chunk:
+        while not self._reader_stop_event.is_set() and process.poll() is None:
+            # A fresh buffer per frame: the pipe writes straight into the
+            # array that gets published, so no memcpy is needed and consumers
+            # can hold the frame as long as they like.
+            frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
+            view = memoryview(frame).cast("B")
+            filled = 0
+            while filled < self._frame_size and not self._reader_stop_event.is_set():
+                try:
+                    count = stdout.readinto(view[filled:])
+                except (ValueError, OSError):
+                    return
+                if not count:
+                    if process.poll() is not None:
+                        break
                     time.sleep(0.001)
                     continue
-                raw.extend(chunk)
+                filled += count
 
-            if len(raw) != self._frame_size:
+            if filled != self._frame_size:
                 break
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
+
             sample = _freeze_sample(frame)
-            with self._lock:
+            arrived_at = time.perf_counter()
+            with self._frame_condition:
                 previous_sample = self._freeze_sample
+                is_duplicate = False
                 if previous_sample is not None and previous_sample.shape == sample.shape:
                     mean_diff = float(cv2.absdiff(sample, previous_sample).mean())
+                    # The driver repeats the previous picture when it has no
+                    # new one (a 60Hz source sampled at ~70Hz); an identical
+                    # sample grid means an identical frame.
+                    is_duplicate = mean_diff == 0.0
                     if mean_diff < _FREEZE_ABSDIFF_THRESHOLD:
                         self._freeze_hold_count += 1
                     else:
                         self._freeze_hold_count = 0
                 else:
                     self._freeze_hold_count = 0
-                self._stream_frozen = self._freeze_hold_count >= _FREEZE_HOLD_FRAMES
+                self._stream_frozen = self._freeze_hold_count >= self._freeze_hold_frames
                 self._freeze_sample = sample
                 self._latest_frame = frame
+                self._latest_is_duplicate = is_duplicate
                 self._latest_frame_seq += 1
-            self._frame_ready_event.set()
+                self._arrival_times.append(arrived_at)
+                self._frame_condition.notify_all()
+
+        with self._frame_condition:
+            self._frame_condition.notify_all()
 
     def is_stream_frozen(self) -> bool:
         with self._lock:
             return self._stream_frozen
 
     def isOpened(self) -> bool:
-        return self._process is not None and self._process.poll() is None and self._process.stdout is not None
+        return self._process is not None and self._process.poll() is None and self._stdout is not None
 
     def read(self):
         if not self.isOpened():
             return False, None
 
-        with self._lock:
-            has_new_frame = self._latest_frame is not None and self._last_read_seq < self._latest_frame_seq
-
-        if not has_new_frame:
-            self._frame_ready_event.wait(timeout=0.01)
-
-        with self._lock:
+        with self._frame_condition:
+            if self._latest_frame is None or self._last_read_seq >= self._latest_frame_seq:
+                self._frame_condition.wait_for(
+                    lambda: self._latest_frame is not None and self._last_read_seq < self._latest_frame_seq,
+                    timeout=_READ_WAIT_TIMEOUT_SEC,
+                )
             if self._latest_frame is None or self._last_read_seq >= self._latest_frame_seq:
                 return False, None
 
             self._last_read_seq = self._latest_frame_seq
-            frame = self._latest_frame
-            self._frame_ready_event.clear()
-
-        return True, frame
+            self.last_read_duplicate = self._latest_is_duplicate
+            return True, self._latest_frame
 
     def grab(self) -> bool:
         return self.isOpened()
@@ -402,18 +688,33 @@ class FFmpegRawVideoCapture:
         return False
 
     def release(self) -> None:
-        self._reader_stop_event.set()
         process = self._process
         self._process = None
-        _stop_ffmpeg_process(process)
+        # Ask ffmpeg to quit while the reader thread is still draining the
+        # pipe: if the reader stopped first, ffmpeg would block on a full pipe
+        # and never get to process the 'q', forcing the hard kill that wedges
+        # the driver. The reader exits on its own when it sees EOF.
+        exited = _stop_ffmpeg_process(process)
+        self._reader_stop_event.set()
         if self._reader_thread is not None and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=1.0)
         self._reader_thread = None
         if self._stderr_thread is not None and self._stderr_thread.is_alive():
             self._stderr_thread.join(timeout=1.0)
         self._stderr_thread = None
-        with self._lock:
+        _close_ffmpeg_pipes(process)
+        stdout = self._stdout
+        self._stdout = None
+        if stdout is not None:
+            try:
+                stdout.close()
+            except Exception:
+                pass
+        with self._frame_condition:
             self._latest_frame = None
+            self._frame_condition.notify_all()
+        if not exited and process is not None:
+            print(f"[CAPTURE] [WARN] ffmpeg pid {process.pid} did not exit; the capture device may stay busy until it does")
 
     def __del__(self) -> None:
         try:
@@ -438,6 +739,8 @@ class FrameSource:
         self._browser_hwnd = 0
         self.monitor_index = int(settings.get("screen_monitor_index", 1))
         self.region = settings.get("screen_region")
+        self.last_open_error = ""
+        self.last_rejected_override: tuple[int, int, int] | None = None
 
         if self._follow_browser:
             self.mode = "screen"
@@ -454,35 +757,23 @@ class FrameSource:
         keywords = ("capture card", "avermedia", "elgato", "decklink", "live gamer", "hdmi", "capture")
         return any(keyword in capture_kind for keyword in keywords) or any(keyword in capture_name for keyword in keywords)
 
-    def _probe_capture_card_mode(self, device_name: str, width: int, height: int, fallback_fps: int) -> tuple[int, int, float]:
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-list_options",
-            "true",
-            "-f",
-            "dshow",
-            "-i",
-            f"video={device_name}",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=8,
-                creationflags=_subprocess_no_window(),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return width, height, float(fallback_fps)
-
-        output = (completed.stdout or "") + "\n" + (completed.stderr or "")
-        resolution_fps_ranges = self._parse_device_modes(output)
+    def _probe_capture_card_mode(
+        self, device_name: str, width: int, height: int, fallback_fps: int
+    ) -> tuple[int, int, float, "FFmpegRawVideoCapture | None"]:
+        """Pick a working mode from what the device advertises, requested
+        mode first. When calibration verifies one, the verified capture is
+        returned still streaming so the caller keeps using it (never
+        probe-and-kill: see _stop_ffmpeg_process)."""
+        output = _run_ffmpeg_query(
+            ["ffmpeg", "-hide_banner", "-list_options", "true", "-f", "dshow", "-i", f"video={device_name}"],
+            timeout=8.0,
+        )
+        resolution_fps_ranges = self._parse_device_modes(output) if output.strip() else {}
         if not resolution_fps_ranges:
-            return width, height, float(fallback_fps)
-
-        ladder = self._build_calibration_ladder(width, height, float(fallback_fps), resolution_fps_ranges)
+            # Could not enumerate modes: try the requested one directly.
+            ladder = [(width, height, float(fallback_fps))]
+        else:
+            ladder = self._build_calibration_ladder(width, height, float(fallback_fps), resolution_fps_ranges)
         return self._calibrate_capture_mode(device_name, ladder)
 
     def _parse_device_modes(self, output: str) -> dict[tuple[int, int], tuple[float, float]]:
@@ -544,9 +835,10 @@ class FrameSource:
         seen: set[tuple[int, int, float]] = set()
 
         def add(mode: tuple[int, int, float]) -> bool:
-            if mode in seen:
-                return False
-            seen.add(mode)
+            # 144.0 and 144.001 are the same hardware mode: never probe both.
+            for seen_w, seen_h, seen_fps in ordered:
+                if (seen_w, seen_h) == mode[:2] and abs(seen_fps - mode[2]) <= _CALIBRATION_FPS_TOLERANCE:
+                    return False
             ordered.append(mode)
             return True
 
@@ -558,27 +850,54 @@ class FrameSource:
             raw_bytes_per_sec = resolution[0] * resolution[1] * fps * 3
             return raw_bytes_per_sec <= _BANDWIDTH_CEILING_BYTES_PER_SEC
 
-        # Respect the configured target first, but only if the device
-        # actually advertises that exact resolution/fps combination --
-        # otherwise this call fails outright with "Could not set video
-        # options" instead of gracefully falling through the ladder.
-        for res_w, res_h, fps in _PREFERRED_AUTO_MODES:
-            if fps_supported((res_w, res_h), fps):
-                add((res_w, res_h, fps))
+        def rates_for(resolution: tuple[int, int]) -> list[float]:
+            low, high = resolution_fps_ranges[resolution]
+            rates = [
+                fps
+                for fps in _FPS_STEP_LADDER
+                if low - _CALIBRATION_FPS_TOLERANCE <= fps <= high + _CALIBRATION_FPS_TOLERANCE
+                and within_bandwidth_ceiling(resolution, fps)
+            ]
+            if within_bandwidth_ceiling(resolution, high) and not any(
+                abs(high - fps) <= _CALIBRATION_FPS_TOLERANCE for fps in rates
+            ):
+                rates.append(high)
+            return sorted(rates, reverse=True)
 
+        # The configured mode is the user's intent: it goes first whenever the
+        # device actually advertises it. Then the requested resolution's next
+        # two rates, then other sizes so a failing native mode still degrades
+        # gracefully instead of stalling startup for minutes.
         requested_resolution = (requested_width, requested_height)
         if fps_supported(requested_resolution, requested_fps) and within_bandwidth_ceiling(
             requested_resolution, requested_fps
         ):
             add((requested_width, requested_height, requested_fps))
 
+        if requested_resolution in resolution_fps_ranges:
+            added_for_requested = 0
+            for fps in rates_for(requested_resolution):
+                if added_for_requested >= _MAX_FPS_CANDIDATES_PER_RESOLUTION:
+                    break
+                if add((requested_width, requested_height, fps)):
+                    added_for_requested += 1
+
+        # Fallback sizes ordered by closeness to the requested one: sizes at or
+        # below the requested area first (largest of those first), then bigger
+        # ones. Requesting 2560x1440 must not fall through to 3840x2160 --
+        # that only makes the card upscale and the app downscale again.
+        requested_area = requested_width * requested_height
+
+        def closeness(res: tuple[int, int]) -> tuple[int, int]:
+            area = res[0] * res[1]
+            return (1 if area > requested_area else 0, abs(area - requested_area))
+
         hd_resolutions = sorted(
-            (res for res in resolution_fps_ranges if res[1] >= _MIN_AUTO_HEIGHT),
-            key=lambda r: r[0] * r[1],
-            reverse=True,
+            (res for res in resolution_fps_ranges if res[1] >= _MIN_AUTO_HEIGHT and res != requested_resolution),
+            key=closeness,
         )
         low_resolutions = sorted(
-            (res for res in resolution_fps_ranges if res[1] < _MIN_AUTO_HEIGHT),
+            (res for res in resolution_fps_ranges if res[1] < _MIN_AUTO_HEIGHT and res != requested_resolution),
             key=lambda r: r[0] * r[1],
             reverse=True,
         )
@@ -586,19 +905,8 @@ class FrameSource:
             if len(ordered) >= _MAX_CALIBRATION_CANDIDATES:
                 break
 
-            low, high = resolution_fps_ranges[(res_w, res_h)]
-            candidate_fps = [
-                fps
-                for fps in _FPS_STEP_LADDER
-                if low - _CALIBRATION_FPS_TOLERANCE <= fps <= high + _CALIBRATION_FPS_TOLERANCE
-                and within_bandwidth_ceiling((res_w, res_h), fps)
-            ]
-            if high not in candidate_fps and within_bandwidth_ceiling((res_w, res_h), high):
-                candidate_fps.append(high)
-            candidate_fps.sort(reverse=True)
-
             added_for_resolution = 0
-            for fps in candidate_fps:
+            for fps in rates_for((res_w, res_h)):
                 if added_for_resolution >= _MAX_FPS_CANDIDATES_PER_RESOLUTION:
                     break
                 if add((res_w, res_h, fps)):
@@ -608,60 +916,84 @@ class FrameSource:
 
     def _calibrate_capture_mode(
         self, device_name: str, ladder: list[tuple[int, int, float]]
-    ) -> tuple[int, int, float]:
-        # This only applies if the ladder itself came back empty (shouldn't
-        # happen -- _probe_capture_card_mode already short-circuits when no
-        # modes were parsed at all); 640x480@30 is about as universally
-        # low-bandwidth as a capture device mode gets.
+    ) -> tuple[int, int, float, "FFmpegRawVideoCapture | None"]:
         hd_ladder = [mode for mode in ladder if mode[1] >= _MIN_AUTO_HEIGHT]
         low_ladder = [mode for mode in ladder if mode[1] < _MIN_AUTO_HEIGHT]
         last_resort = (hd_ladder[0] if hd_ladder else None) or (ladder[-1] if ladder else (1920, 1080, 60.0))
 
-        # A two-phase fast-screen/strict-verify split was tried and reverted:
-        # a lax short-window first pass can reject a perfectly good candidate
-        # by pure timing noise, and unlike a false *positive* (which the
-        # strict second pass would catch), that false *negative* has no
-        # recovery -- the candidate never reaches strict verification at all,
-        # silently downgrading the result (confirmed on real hardware: it
-        # regressed a verified-clean 1440x900@60 result down to 640x480@60
-        # with no error surfaced). Every candidate here gets the same single,
-        # strict, real hardware test; the bandwidth pre-filter baked into
-        # _build_calibration_ladder is what keeps total candidates -- and
-        # therefore calibration time -- down, without weakening verification
-        # of what's actually tried.
+        # Every candidate gets one strict, real hardware test, and the first
+        # one that passes is handed back *still running* as the live capture.
+        # Closing the verified probe and re-opening the same mode a moment
+        # later was the startup race that produced starved sessions: if the
+        # driver had not finished tearing the probe down, the real capture
+        # became a second client and received a trickle of frames.
         for width, height, fps in hd_ladder:
-            if self._verify_candidate_strict(device_name, width, height, fps):
-                return width, height, fps
+            passed, frame_count, probe = self._measure_candidate(device_name, width, height, fps)
+            if passed:
+                return width, height, fps, probe
+            if self.last_open_error and self._error_means_busy(self.last_open_error):
+                # Another client owns the card. Trying more modes only stacks
+                # more failed opens on it; wait once for a previous ffmpeg to
+                # let go, retry the same mode, then report busy.
+                _wait_for_lingering_ffmpeg()
+                time.sleep(2.0)
+                passed, frame_count, probe = self._measure_candidate(device_name, width, height, fps)
+                if passed:
+                    return width, height, fps, probe
+                return (*last_resort, None)
+            if frame_count == 0:
+                # Opened but produced nothing at all: no signal on this mode.
+                # Probing every remaining mode would stall startup for
+                # minutes; hand back the preferred mode and let the capture
+                # loop report the stall.
+                return (*last_resort, None)
 
         if hd_ladder:
-            return hd_ladder[0]
+            return (*last_resort, None)
 
         for width, height, fps in low_ladder:
-            if self._verify_candidate_strict(device_name, width, height, fps):
-                return width, height, fps
+            passed, frame_count, probe = self._measure_candidate(device_name, width, height, fps)
+            if passed:
+                return width, height, fps, probe
+            if frame_count == 0 or (self.last_open_error and self._error_means_busy(self.last_open_error)):
+                break
 
-        return last_resort
+        return (*last_resort, None)
 
     def _verify_candidate_strict(
         self, device_name: str, width: int, height: int, fps: float
-    ) -> bool:
+    ) -> "FFmpegRawVideoCapture | None":
+        passed, _, probe = self._measure_candidate(device_name, width, height, fps)
+        return probe if passed else None
+
+    def _measure_candidate(
+        self, device_name: str, width: int, height: int, fps: float
+    ) -> tuple[bool, int, "FFmpegRawVideoCapture | None"]:
+        """Returns (passed, frames_seen, capture). The capture is only
+        returned (still streaming) when the candidate passed."""
         try:
             probe = FFmpegRawVideoCapture(device_name, width, height, int(round(fps)))
         except Exception:
-            return False
+            return False, 0, None
 
         if not probe.isOpened():
+            self.last_open_error = probe.get_last_error()
             probe.release()
             time.sleep(_CALIBRATION_SETTLE_SEC)
-            return False
+            return False, 0, None
 
         warmup_deadline = time.time() + _CALIBRATION_WARMUP_SEC
+        warmup_frames = 0
         while time.time() < warmup_deadline:
-            probe.read()
+            ok, _ = probe.read()
+            if ok:
+                warmup_frames += 1
+            if not probe.isOpened():
+                break
 
         start = time.time()
         frame_count = 0
-        while time.time() - start < _CALIBRATION_TEST_DURATION_SEC:
+        while time.time() - start < _CALIBRATION_TEST_DURATION_SEC and probe.isOpened():
             ok, frame = probe.read()
             if ok and frame is not None:
                 frame_count += 1
@@ -671,10 +1003,26 @@ class FrameSource:
         elapsed = max(time.time() - start, 0.001)
         achieved_fps = frame_count / elapsed
         overflowed = "too full" in probe.get_last_error()
+        busy = probe.device_busy()
+        # The driver may legitimately deliver fewer frames than the mode's
+        # nominal rate (this card tops out near 70fps at 2560x1440 whatever
+        # is requested). With passthrough output that is not a fault: the
+        # test is that frames flow steadily and nothing overflowed.
+        passed = probe.isOpened() and not overflowed and not busy and frame_count > 0 and achieved_fps >= min(
+            fps * _CALIBRATION_MIN_FPS_RATIO, _CALIBRATION_MIN_ABSOLUTE_FPS
+        )
+        print(
+            f"[CAPTURE] [CALIBRATE] {width}x{height}@{fps:.0f}: {achieved_fps:.1f} fps"
+            f"{' OVERFLOW' if overflowed else ''}{' BUSY' if busy else ''} -> {'ok' if passed else 'reject'}"
+        )
+        if passed:
+            return True, frame_count + warmup_frames, probe
+
+        if busy:
+            self.last_open_error = probe.get_last_error()
         probe.release()
         time.sleep(_CALIBRATION_SETTLE_SEC)
-
-        return not overflowed and frame_count > 0 and achieved_fps >= fps * _CALIBRATION_MIN_FPS_RATIO
+        return False, frame_count + warmup_frames, None
 
     def _resolve_browser_region(self) -> dict[str, int] | None:
         region = _window_region(self._browser_hwnd)
@@ -734,18 +1082,19 @@ class FrameSource:
                 # (the capture thread just dies). Verifying up front means an
                 # unsupported override degrades to auto-calibration instead
                 # of killing the feed outright.
-                if self._verify_candidate_strict(
+                live = self._verify_candidate_strict(
                     self._capture_device_name, override_width, override_height, override_fps
-                ):
+                )
+                if live is not None:
                     width, height, fps = override_width, override_height, max(1, override_fps)
                 else:
                     self.last_rejected_override = (override_width, override_height, override_fps)
-                    width, height, probed_fps = self._probe_capture_card_mode(
+                    width, height, probed_fps, live = self._probe_capture_card_mode(
                         self._capture_device_name, requested_width, requested_height, requested_fps
                     )
                     fps = max(1, int(round(probed_fps)))
             else:
-                width, height, probed_fps = self._probe_capture_card_mode(
+                width, height, probed_fps, live = self._probe_capture_card_mode(
                     self._capture_device_name, requested_width, requested_height, requested_fps
                 )
                 fps = max(1, int(round(probed_fps)))
@@ -753,10 +1102,9 @@ class FrameSource:
             self.settings["capture_width"] = width
             self.settings["capture_height"] = height
             self.settings["capture_fps"] = fps
-            try:
-                return FFmpegRawVideoCapture(self._capture_device_name, width, height, fps)
-            except Exception:
-                pass
+            if live is not None and live.isOpened():
+                return live
+            return None
 
         for backend in (cv2.CAP_ANY, cv2.CAP_DSHOW):
             cap = cv2.VideoCapture(camera_index, backend)
@@ -767,6 +1115,21 @@ class FrameSource:
             return cap
 
         return cv2.VideoCapture(camera_index)
+
+    @staticmethod
+    def _error_means_busy(text: str) -> bool:
+        lowered = text.lower()
+        return "already in use" in lowered or "resource busy" in lowered
+
+    def open_error_message(self) -> str:
+        """Human-readable reason for the last failed open, if known."""
+        if self.last_open_error and self._error_means_busy(self.last_open_error):
+            return (
+                "Capture card is exclusive and did not open. Close OBS/Streamlabs/RECentral if they have "
+                "this device, wait a second, then RESCAN. If CheatVision just restarted, the previous "
+                "ffmpeg may still be releasing the card."
+            )
+        return self.last_open_error or ""
 
     def _normalize_resolution_override(self, override: Any) -> tuple[int, int, int] | None:
         if override is None:
@@ -800,19 +1163,8 @@ class FrameSource:
             requested_width = int(settings.get("capture_width", 2560))
             requested_height = int(settings.get("capture_height", 1440))
 
-        if (
-            self._is_capture_card_device()
-            and self._capture_device_name
-            and not isinstance(self.capture, FFmpegRawVideoCapture)
-        ):
-            requested_width, requested_height, probed_fps = self._probe_capture_card_mode(
-                self._capture_device_name,
-                requested_width,
-                requested_height,
-                requested_fps,
-            )
-            requested_fps = max(1, int(round(probed_fps)))
-            self.settings["capture_fps"] = requested_fps
+        # No ffmpeg probing here: this path only runs when OpenCV already
+        # holds the device, and a second DirectShow client starves both.
 
         if requested_width > 0 and requested_height > 0:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
@@ -942,17 +1294,11 @@ def infer_device_kind(label: str) -> str:
 
 
 def _list_directshow_video_names() -> list[str]:
-    try:
-        completed = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=8,
-            creationflags=_subprocess_no_window(),
-        )
-        output = (completed.stdout or "") + "\n" + (completed.stderr or "")
-    except (OSError, subprocess.TimeoutExpired):
+    output = _run_ffmpeg_query(
+        ["ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+        timeout=8.0,
+    )
+    if not output.strip():
         return []
 
     names: list[str] = []

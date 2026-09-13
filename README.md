@@ -16,36 +16,41 @@ Entry: `python main.py` (`src/app.py` loads `config/settings.json` and opens
 
 ## Architecture
 
-Four Qt worker threads plus the UI thread. Nobody queues a backlog of live
+Five Qt worker threads plus the UI thread. Nobody queues a backlog of live
 frames: each stage keeps **one latest** `FrameContext` and drops the rest.
 
 ```
 DirectShow / ffmpeg / MSS / VOD file
             │
             ▼
-   CaptureWorker or PlaybackWorker     (grab loop, latest-frame only)
-            │  frameAvailable(frame_id)
-            ├──────────────────────────────► UI display timer (~60 Hz)
-            │                                paints pipeline.get_display_frame()
+   CaptureWorker or PlaybackWorker     (grab loop, publishes latest frame; wakes waiters)
+            │  wait_for_frame(last_id)
+            ├──────────────────────────────► RenderWorker (≤240 Hz, latest frame only)
+            │                                overlays + fit-to-canvas resize, then a
+            │                                single-slot mailbox → UI paints it
             ├──────────────────────────────► AnalysisWorker
-            │                                process_frame() every unique id
-            │                                downscale to 960×540 on analysis stride
+            │                                process_frame() every unique id on a
+            │                                960×540 downscale; telemetry ≤20 Hz
             └──────────────────────────────► DetectionWorker (YOLO, VOD or opt-in LIVE)
                                              writes boxes back onto the pipeline
 ```
 
-- **CaptureWorker** — owns `FrameSource`. Tight read loop. `ack_frame_signal()`
-  lets the grabber emit the next frame only after the UI has taken the last one.
+- **CaptureWorker** — owns `FrameSource`. Tight read loop; frames the driver
+  merely repeated are dropped here so nothing downstream works on duplicates.
+  Reports the measured feed rate (delivered / new pictures) once a second and
+  warns when the card is being starved by another client.
 - **PlaybackWorker** — mounted VOD. Opens with `cv2.CAP_FFMPEG` first. Clamps
-  reported FPS to **12–120** (else **30**) because OpenCV often reports `0` or
-  `1000` on Streamlabs MP4s. Waits for UI ack before `cap.read()` of the next
-  frame, then sleeps the remainder of `1/fps`.
+  reported FPS to **12–480** (else **30**) because OpenCV often reports `0` or
+  `1000` on Streamlabs MP4s. Paces frames on an absolute schedule so timer
+  granularity cannot accumulate into drift and catch-up bursts.
 - **AnalysisWorker** — calls `AntiCheatPipeline.process_frame`. Emits telemetry
-  and `CheatEvent`s. Downscales only when `should_analyze_frame` (stride).
-- **DetectionWorker** — optional YOLO. Off for live HDMI unless **Analyze this
-  display**. Always on for VOD.
-- **MainWindow** — composition root. Display timer paints; it never blocks on
-  analysis.
+  and `CheatEvent`s.
+- **DetectionWorker** — optional YOLO (ONNX Runtime capped at 4 intra-op
+  threads). Off for live HDMI unless **ANALYZE LIVE**. Always on for VOD. Idles
+  when disabled instead of waking per frame.
+- **RenderWorker** — builds the display frame off the UI thread; the UI thread
+  only blits.
+- **MainWindow** — composition root; never blocks on capture or analysis.
 
 `FrameContext` carries `frame` (display BGR), optional `analysis_frame`,
 `timestamp`, `frame_id`, `source`.
@@ -59,22 +64,43 @@ DirectShow / ffmpeg / MSS / VOD file
 Capture cards go through **ffmpeg dshow**, not OpenCV’s camera API.
 
 1. `ffmpeg -list_options` on the device, parse **bgr24** modes.
-2. AUTO ladder tries **1920×1080@60**, then **2560×1440@60**, then other
+2. AUTO ladder tries the **requested mode first** (default 2560×1440@144), then
+   the requested resolution at its other advertised rates, then other
    height ≥ 720, then sub-720 last.
 3. Each candidate is probed for ~2.5s after a 1s warmup. Pass if no
-   `too full` overflow and achieved FPS ≥ 92% of target.
+   `too full` overflow, the device is not busy, and frames arrive steadily
+   (≥ 92% of target or ≥ 50 fps). **The passing probe is kept as the live
+   capture** — closing it and re-opening the same mode a moment later was a
+   race that turned the real capture into a starved second client.
 4. Height **< 720 is not AUTO success** if any HD mode exists. The SOURCE
    card shows a yellow **low mode** chip; the log line is `[LOW MODE]` not
    `[SUCCESS]`.
 5. Preview geometry will not squash an HD source below 720p (the old 1280-wide
    cap turned 2560×1080 into 1280×540).
 
-`FFmpegRawVideoCapture` runs ffmpeg with a raw BGR24 pipe, a reader thread, and
-a stderr drain. `release()` closes both pipes and `taskkill /F /T` the process
-tree so calibration probes do not leak ffmpeg.exe.
+`FFmpegRawVideoCapture` runs ffmpeg with `-fps_mode passthrough` into a raw
+BGR24 pipe (64 MB kernel buffer, unbuffered `readinto` straight into the frame
+array — the default 32 KB pipe plus Python's `BufferedReader` could not keep up
+with 1440p144 and made ffmpeg drop frames). Passthrough matters: constant-frame-
+rate output pads the stream with repeated frames to reach the requested rate;
+the GC573 driver itself yields ~70 frames/s at 2560×1440 whatever is requested,
+so the old output was half duplicates. Frames the driver repeats are flagged and
+skipped by `CaptureWorker`; the left-rail **FEED** row shows `delivered (new)` fps.
 
-Freeze latch: downscale to max 320px gray, mean absdiff. Frozen only after **90**
-consecutive frames below **1.5**. HUD/smoke/facecam motion clears it.
+`release()` sends ffmpeg `q` on stdin and waits for it to exit before anything
+else; a hard kill is only the fallback. Killing ffmpeg while the graph streams
+can hang the AVerMedia driver's close path: the process becomes an unkillable
+zombie that still owns the device and every later open fails with *"device
+already in use"* until a reboot. All ffmpeg children also sit in a Windows job
+object with *kill-on-close*, so a crash of the app cannot leave one behind.
+
+**One client per card.** If OBS / Streamlabs / RECentral / a browser tab has the
+card open, opening fails with a clear message, or frames arrive as a trickle —
+the status text in the top bar then warns *CAPTURE CARD DELIVERING ONLY N FPS*.
+
+Freeze latch: 320×180 nearest-neighbour gray sample, mean absdiff. Frozen only
+after the greater of **90 frames** or **1.5 s** below **1.5**. HUD/smoke/facecam
+motion clears it.
 
 ---
 
@@ -161,16 +187,20 @@ checked (desktop/task-manager frames false-positive). VOD always can.
 
 ## UI
 
+The window is three pieces: a 44 px control bar, the tool rail (toggle with
+**TOOLS**), and the video canvas, which runs to the right and bottom edges. The
+VOD scrubber appears under the canvas only while a file is mounted.
+
 | piece | job |
 |---|---|
-| `ControlBar` | Import VOD, Rescan, SRC profile, view mode, optional RES/FPS, clean baseline |
-| `LeftRail` | SOURCE (mode / low mode), SIGNAL (STR + TREMOR sparkline), DETECT (YOLO / tracks / gate), PROFILE |
-| `VideoCanvas` | latest QImage, 60 Hz timer, not every capture callback |
-| `IncidentQueueTable` | collapsed 28px until first flag; seek-to-frame on VOD |
+| `ControlBar` | Import VOD, Rescan, TOOLS, SRC profile, live status text (mode · profile · warnings, elided with tooltip), optional RES/FPS, clean baseline |
+| `LeftRail` | SOURCE (mode / feed rate / low mode), SIGNAL (STR + TREMOR sparkline), DETECT (YOLO / tracks / gate), PROFILE, INCIDENTS (flag table with count; double-click seeks a VOD) |
+| `VideoCanvas` | paints the latest rendered frame; `RenderWorker` builds it off the UI thread and hands it over through a single-slot mailbox (no backlog) |
 | View modes | STANDARD, HEATMAP, FLAGGED |
 
-Paint path: `display_frame = pipeline.get_display_frame(ctx.frame)`. If the gate
-is not live, skip overlays and stamp `GATE:<reason>`.
+Paint path: `RenderWorker` always renders the **live** frame (never the gate's
+held frame, which used to freeze the picture and snap forward). If the gate is
+not live, skip overlays and stamp `GATE:<reason>`.
 
 ---
 
@@ -211,6 +241,17 @@ HUD mask fractions and whether HUD energy is required for “live gameplay”.
 Drop clips in `data/clean/` (legit) and `data/suspicious/` (cheat). Both are
 gitignored.
 
+**RECORD CLEAN BASELINE** writes `data/clean/baseline_session_<ts>.mp4` from
+the live feed. Frames go through a small queue into an ffmpeg encoder process —
+`h264_nvenc` → `h264_qsv` → `h264_amf` → `libx264`, whichever works on the
+machine (probed once at startup) — with OpenCV's writers only as a last resort
+(they manage ~23 fps at 1440p, which used to drop most frames and let the queue
+balloon to 660 MB). Only new pictures are recorded and the file is stamped with
+the measured unique-picture rate, so it plays back at real speed. Stopping is
+instant for the UI; the mp4 trailer is written in the background (the app waits
+up to 10 s for it on exit). The log line `[EXPORT] baseline saved ...` reports
+frames written and any drops.
+
 ```bash
 python tools/import_dataset.py --input <clips> --labels <csv> --output data
 python src/core/train_workflow.py
@@ -234,17 +275,18 @@ coordinate-space scaling.
 |---|---|
 | `main.py` | entry |
 | `src/app.py` | Qt bootstrap + crash log |
-| `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, freeze, process-tree kill |
+| `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, freeze, graceful ffmpeg lifecycle + job object |
 | `src/core/scene_gate.py` | Live/Held hysteresis |
 | `src/core/anti_cheat_pipeline.py` | skip reasons, gate, kinematics, replica-aim, events |
 | `src/core/anomaly_detector.py` | phase-correlation aim |
 | `src/core/hud_masker.py` | fractional HUD mask, letterbox, HUD energy |
 | `src/core/game_profiles.py` | JSON HUD layouts |
 | `src/core/object_detector.py` | YOLO + IOU tracker |
-| `src/core/dataset_exporter.py` | clean baseline + flagged clips |
+| `src/core/dataset_exporter.py` | clean baseline (ffmpeg/NVENC pipe) + flagged clips |
 | `src/core/train_workflow.py` | optional classifier |
-| `src/ui/main_window.py` | composition root, paint, GATE chip |
-| `src/ui/workers.py` | capture / playback / analysis / detection threads |
+| `src/ui/main_window.py` | composition root, worker wiring |
+| `src/ui/control_bar.py` / `left_rail.py` / `video_canvas.py` / `incident_queue.py` / `playback_controls.py` / `theme.py` | widgets |
+| `src/ui/workers.py` | capture / playback / analysis / detection / render threads |
 | `config/settings.json` | defaults |
 | `config/game_profiles/` | `warzone.json`, `generic.json` |
 | `tests/` | unit tests |

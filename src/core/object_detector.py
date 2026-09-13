@@ -7,6 +7,13 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+# Inference shares the machine with the capture reader, renderer, analysis
+# worker, ffmpeg and the UI thread. ORT's default (one intra-op thread per
+# physical core) saturates every core during each detection pass, which shows
+# up as stutter in the live picture; a small fixed pool keeps detection fast
+# enough at 30fps without starving the video path.
+_ORT_INTRA_OP_THREADS = 4
+
 
 class PixelVisionObjectDetector:
     def __init__(
@@ -50,8 +57,13 @@ class PixelVisionObjectDetector:
 
     def _load_onnx_model(self) -> None:
         try:
+            session_options = ort.SessionOptions()
+            session_options.intra_op_num_threads = _ORT_INTRA_OP_THREADS
+            session_options.inter_op_num_threads = 1
+            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             self.ort_session = ort.InferenceSession(
                 self.model_path,
+                sess_options=session_options,
                 providers=["CPUExecutionProvider"],
             )
             output_shape = self.ort_session.get_outputs()[0].shape

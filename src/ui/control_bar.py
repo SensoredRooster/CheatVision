@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,6 +11,36 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QWidget,
 )
+
+
+class StatusLabel(QLabel):
+    """Single-line status text that takes whatever width the bar has left and
+    elides instead of pushing the buttons off-screen; the full text is kept
+    for `text()` and shown as a tooltip."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(80)
+        self.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt API)
+        self._full_text = str(text)
+        self.setToolTip(self._full_text)
+        self._apply_elide()
+
+    def text(self) -> str:  # noqa: N802 (Qt API)
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        available = max(0, self.width() - 4)
+        super().setText(self.fontMetrics().elidedText(self._full_text, Qt.ElideRight, available))
 
 RESOLUTION_PRESETS: tuple[tuple[str, int, int], ...] = (
     ("AUTO", 0, 0),
@@ -85,7 +115,11 @@ class ControlBar(QWidget):
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         layout.addWidget(self.profile_combo)
 
-        layout.addStretch(1)
+        # Live status (mode, profile, warnings) lives here now instead of a
+        # bottom status bar, so the video reaches the window edge.
+        self.status_label = StatusLabel("Initializing...")
+        self.status_label.setObjectName("StatusLabel")
+        layout.addWidget(self.status_label, 1)
 
         self.capture_mode_group = self._build_capture_mode_group()
         layout.addWidget(self.capture_mode_group)

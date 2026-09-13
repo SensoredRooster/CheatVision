@@ -31,7 +31,23 @@ def _downscale(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
 
     target_w = max(1, int(source_w * scale))
     target_h = max(1, int(source_h * scale))
-    return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    # INTER_LINEAR is ~6x cheaper than INTER_AREA for these 2-3x reductions
+    # (measured 1.1ms vs 7ms for 1440p->960x540), and the analysers/detector
+    # are insensitive to the slight extra aliasing.
+    return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+
+# Analysis-side telemetry only needs to reach the UI a few times a second; the
+# panel itself repaints at 4Hz. Flag transitions still bypass this throttle.
+_TELEMETRY_EMIT_INTERVAL_SEC = 1.0 / 20.0
+# Upper bound on how often the render worker will build a display frame. The
+# worker always renders the *latest* source frame, so a slower machine simply
+# skips frames rather than falling behind.
+_RENDER_MAX_FPS = 240
+# Live feed-rate reporting and starvation detection (see CaptureWorker).
+_FEED_RATE_REPORT_INTERVAL_SEC = 1.0
+_STARVED_RATIO = 0.35
+_STARVED_HOLD_SEC = 3.0
 
 
 def _with_gate_chip(frame: np.ndarray, reason: str) -> np.ndarray:
@@ -79,6 +95,9 @@ class CaptureWorker(QObject):
     captureError = Signal(str)
     streamFrozen = Signal(bool)
     waitingForDevice = Signal()
+    # (delivered_fps, unique_fps, starved): what the driver is really handing
+    # over versus the requested mode, refreshed about once a second.
+    feedRateMeasured = Signal(float, float, bool)
 
     def __init__(self, settings: dict, dataset_exporter: PixelVisionDatasetExporter):
         super().__init__()
@@ -92,6 +111,7 @@ class CaptureWorker(QObject):
         self._frame_sequence = 0
         self._recent_frame_cache: deque[np.ndarray] = deque(maxlen=1)
         self._live_frame_timestamps: deque[float] = deque(maxlen=180)
+        self._delivered_timestamps: deque[float] = deque(maxlen=240)
         self._ffmpeg_capture: FFmpegRawVideoCapture | None = None
         self._negotiated = (0, 0, 0.0)
         self._backend = ""
@@ -113,6 +133,13 @@ class CaptureWorker(QObject):
                 timeout=timeout,
             )
             return self._latest_context
+
+    def input_mode(self) -> tuple[int, int, int] | None:
+        """Mode negotiated with the device (may be larger than the preview frames)."""
+        capture = self._ffmpeg_capture
+        if capture is None:
+            return None
+        return int(capture.input_width), int(capture.input_height), int(capture.input_fps)
 
     def estimate_live_fps(self) -> float:
         timestamps = list(self._live_frame_timestamps)
@@ -138,7 +165,12 @@ class CaptureWorker(QObject):
             if getattr(self._frame_source, "_follow_browser", False):
                 self.captureError.emit("No browser window found. Open Chrome/Edge with the stream visible.")
             else:
-                self.captureError.emit("Failed to open capture source")
+                reason = ""
+                try:
+                    reason = self._frame_source.open_error_message()
+                except Exception:
+                    reason = ""
+                self.captureError.emit(reason or "Failed to open capture source")
             self._frame_source = None
             return
 
@@ -237,12 +269,34 @@ class CaptureWorker(QObject):
         empty_clear_seconds = 1.0
         waiting_reported = False
         is_frozen_reported = False
+        next_rate_report = time.monotonic() + _FEED_RATE_REPORT_INTERVAL_SEC
+        starved_since: float | None = None
+        starved_reported = False
 
         while not self._stop_event.is_set():
             try:
                 success, frame = self._frame_source.read() if self._frame_source is not None else (False, None)
             except Exception:
                 success, frame = False, None
+
+            now_mono = time.monotonic()
+            if now_mono >= next_rate_report:
+                next_rate_report = now_mono + _FEED_RATE_REPORT_INTERVAL_SEC
+                self._report_feed_rate(now_mono)
+                delivered = self._rate(self._delivered_timestamps, now_mono)
+                requested = float(self._negotiated[2] or 0.0)
+                # A healthy card yields at least half the requested rate (this
+                # one gives ~70 of a requested 144). Far less for several
+                # seconds means another client owns the device.
+                is_starved = requested > 0 and 0.0 < delivered < requested * _STARVED_RATIO
+                if is_starved:
+                    starved_since = starved_since or now_mono
+                else:
+                    starved_since = None
+                should_report = starved_since is not None and now_mono - starved_since >= _STARVED_HOLD_SEC
+                if should_report != starved_reported:
+                    starved_reported = should_report
+                    self.feedRateMeasured.emit(delivered, self._rate(self._live_frame_timestamps, now_mono), should_report)
 
             if not success or frame is None:
                 device_gone = self._ffmpeg_capture is not None and not self._ffmpeg_capture.isOpened()
@@ -261,6 +315,7 @@ class CaptureWorker(QObject):
 
             stall_started_at = None
             waiting_reported = False
+            self._delivered_timestamps.append(now_mono)
 
             try:
                 self._maybe_emit_negotiated_from_frame(frame)
@@ -269,6 +324,10 @@ class CaptureWorker(QObject):
                     if is_frozen_now != is_frozen_reported:
                         is_frozen_reported = is_frozen_now
                         self.streamFrozen.emit(is_frozen_now)
+                    if self._ffmpeg_capture.last_read_duplicate:
+                        # Driver repeated the previous picture: nothing new to
+                        # analyse, render or record.
+                        continue
 
                 self._frame_sequence += 1
                 timestamp = time.time()
@@ -279,12 +338,26 @@ class CaptureWorker(QObject):
                     source=str(self._settings.get("capture_mode", "camera")),
                     is_duplicate=False,
                 )
-                self._live_frame_timestamps.append(timestamp)
+                self._live_frame_timestamps.append(now_mono)
                 self._publish_latest(context)
                 self._dataset_exporter.write_frame(frame)
             except Exception as exc:
                 self.captureError.emit(f"capture pipeline error: {exc!r}")
                 return
+
+    @staticmethod
+    def _rate(timestamps: deque[float], now: float, window: float = 2.0) -> float:
+        recent = [t for t in timestamps if now - t <= window]
+        if len(recent) < 2:
+            return 0.0
+        span = recent[-1] - recent[0]
+        return (len(recent) - 1) / span if span > 0 else 0.0
+
+    def _report_feed_rate(self, now: float) -> None:
+        delivered = self._rate(self._delivered_timestamps, now)
+        unique = self._rate(self._live_frame_timestamps, now)
+        if delivered > 0:
+            self.feedRateMeasured.emit(delivered, unique, False)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -342,12 +415,15 @@ class PlaybackWorker(QObject):
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         reported = self._fps_override if self._fps_override > 0 else float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        fps = reported if 12.0 <= reported <= 120.0 else 30.0
+        fps = reported if 12.0 <= reported <= 480.0 else 30.0
         self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         self.sourceOpened.emit(width, height, fps, self.total_frames)
 
         frame_delay = 1.0 / fps
         finished_naturally = False
+        # Absolute schedule: sleeping "delay minus decode time" per frame lets
+        # timer granularity accumulate into drift and periodic catch-up bursts.
+        next_due = time.perf_counter()
 
         while not self._stop_event.is_set():
             with self._seek_lock:
@@ -355,12 +431,13 @@ class PlaybackWorker(QObject):
                 self._seek_target = None
             if seek_target is not None:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, seek_target - 1))
+                next_due = time.perf_counter()
 
             if self._pause_event.is_set():
                 time.sleep(0.03)
+                next_due = time.perf_counter()
                 continue
 
-            start_time = time.perf_counter()
             ret, frame = cap.read()
             if not ret or frame is None:
                 finished_naturally = True
@@ -378,8 +455,15 @@ class PlaybackWorker(QObject):
                 self._latest_context = context
                 self._frame_condition.notify_all()
 
-            elapsed = time.perf_counter() - start_time
-            time.sleep(max(0.0, frame_delay - elapsed))
+            next_due += frame_delay
+            now = time.perf_counter()
+            if next_due < now - frame_delay * 4:
+                # Decoding fell far behind (e.g. seek or stall): resync the
+                # schedule instead of racing through frames to catch up.
+                next_due = now
+            remaining = next_due - now
+            if remaining > 0:
+                time.sleep(remaining)
 
         cap.release()
         self._capture = None
@@ -464,6 +548,8 @@ class AnalysisWorker(QObject):
     @Slot()
     def start(self) -> None:
         self._stop_event.clear()
+        last_telemetry_emit = 0.0
+        last_flagged = False
         while not self._stop_event.is_set():
             with self._source_lock:
                 source = self._source
@@ -473,16 +559,24 @@ class AnalysisWorker(QObject):
             if ctx is None or ctx.frame_id == self._last_analyzed_frame_id:
                 continue
 
-            if ctx.analysis_frame is None and self._pipeline.should_analyze_frame(ctx.frame_id):
+            # The scene-gate checks run on every frame, so always hand the
+            # pipeline a downscaled frame -- otherwise 2 of every 3 frames get
+            # three full-resolution colour conversions each.
+            if ctx.analysis_frame is None:
                 ctx.analysis_frame = _downscale(ctx.frame, 960, 540)
 
             event = self._pipeline.process_frame(frame_context=ctx)
             with self._source_lock:
                 self._last_analyzed_frame_id = ctx.frame_id
 
-            telemetry = dict(self._pipeline.last_telemetry_snapshot or {})
-            telemetry["flagged"] = event is not None
-            self.telemetryUpdated.emit(telemetry)
+            flagged = event is not None
+            now = time.monotonic()
+            if flagged != last_flagged or now - last_telemetry_emit >= _TELEMETRY_EMIT_INTERVAL_SEC:
+                telemetry = dict(self._pipeline.last_telemetry_snapshot or {})
+                telemetry["flagged"] = flagged
+                self.telemetryUpdated.emit(telemetry)
+                last_telemetry_emit = now
+                last_flagged = flagged
 
             if event is not None:
                 self.cheatEventDetected.emit(event)
@@ -495,9 +589,16 @@ class AnalysisWorker(QObject):
 
 
 class RenderWorker(QObject):
-    """Builds display frames off the UI thread from the latest source frame."""
+    """Builds display frames off the UI thread from the latest source frame.
 
-    frameReady = Signal(object)
+    Hand-off to the UI is a single-slot mailbox: the worker overwrites the
+    latest payload and only posts ``frameReady`` when the UI has not yet
+    picked up the previous one, so a busy UI thread can never accumulate a
+    backlog of stale frames (which shows up as growing latency followed by a
+    visible skip).
+    """
+
+    frameReady = Signal()
 
     def __init__(
         self,
@@ -505,7 +606,7 @@ class RenderWorker(QObject):
         live_overlay,
         advanced_overlay,
         source: CaptureWorker | PlaybackWorker,
-        target_fps: int = 60,
+        target_fps: int = _RENDER_MAX_FPS,
     ):
         super().__init__()
         self._pipeline = pipeline
@@ -520,6 +621,9 @@ class RenderWorker(QObject):
         self._target_size = (320, 180)
         self._render_revision = 0
         self._stop_event = threading.Event()
+        self._mailbox_lock = threading.Lock()
+        self._latest_payload: dict | None = None
+        self._notify_pending = False
 
     def set_source(self, source: CaptureWorker | PlaybackWorker) -> None:
         with self._source_lock:
@@ -546,6 +650,22 @@ class RenderWorker(QObject):
             self._target_size = (max(320, int(width)), max(180, int(height)))
             self._render_revision += 1
 
+    def take_latest(self) -> dict | None:
+        """Called on the UI thread: returns the newest payload and re-arms notification."""
+        with self._mailbox_lock:
+            payload = self._latest_payload
+            self._latest_payload = None
+            self._notify_pending = False
+            return payload
+
+    def _publish(self, payload: dict) -> None:
+        with self._mailbox_lock:
+            self._latest_payload = payload
+            should_notify = not self._notify_pending
+            self._notify_pending = True
+        if should_notify:
+            self.frameReady.emit()
+
     @Slot()
     def start(self) -> None:
         self._stop_event.clear()
@@ -559,21 +679,25 @@ class RenderWorker(QObject):
                 source = self._source
                 revision = self._render_revision
 
-            timeout = max(0.0, next_render_at - time.monotonic()) if next_render_at > 0.0 else frame_interval
-            ctx = source.wait_for_frame(last_seen_frame_id, timeout=timeout)
+            now = time.monotonic()
+            wait_timeout = frame_interval if now >= next_render_at else max(0.001, next_render_at - now)
+            ctx = source.wait_for_frame(last_seen_frame_id, timeout=wait_timeout)
             if ctx is None:
                 ctx = source.get_latest_context()
             if ctx is None:
                 continue
+            now = time.monotonic()
+            if now < next_render_at:
+                # Frame arrived ahead of the render cap: wait it out, then
+                # render whatever is newest rather than this older frame.
+                time.sleep(next_render_at - now)
+                ctx = source.get_latest_context() or ctx
             last_seen_frame_id = ctx.frame_id
 
             gate_reason = self._pipeline.gate_reason()
             is_gate_live = self._pipeline.is_gate_live()
             signature = (ctx.frame_id, is_gate_live, gate_reason, revision)
-            now = time.monotonic()
-            if signature == last_render_signature and now < next_render_at:
-                continue
-            if now < next_render_at and last_render_signature is not None and revision == last_render_signature[3]:
+            if signature == last_render_signature:
                 continue
 
             with self._source_lock:
@@ -583,7 +707,10 @@ class RenderWorker(QObject):
                 flagged_track_ids = set(self._flagged_track_ids)
                 target_w, target_h = self._target_size
 
-            display_frame = self._pipeline.get_display_frame(ctx.frame)
+            # Always show the live frame: substituting the gate's held frame
+            # here froze the picture and then snapped forward when the gate
+            # re-opened. The gate still drives analysis and the status chip.
+            display_frame = ctx.frame
             render_error: str | None = None
             try:
                 if is_gate_live:
@@ -600,27 +727,20 @@ class RenderWorker(QObject):
                         flagged_id = flagged_event.telemetry_data.get("associated_track_id") if flagged_event else None
                         if entities:
                             display_frame = self._live_overlay.render_overlays(display_frame, entities, flagged_id=flagged_id)
-                source_h, source_w = display_frame.shape[:2]
-                if source_w > target_w or source_h > target_h:
-                    scale = min(target_w / source_w, target_h / source_h, 1.0)
-                    display_frame = cv2.resize(
-                        display_frame,
-                        (max(1, int(source_w * scale)), max(1, int(source_h * scale))),
-                        interpolation=cv2.INTER_AREA,
-                    )
+                display_frame = self._fit_to_target(display_frame, target_w, target_h)
                 if not is_gate_live:
                     display_frame = _with_gate_chip(display_frame, gate_reason)
                 if not display_frame.flags["C_CONTIGUOUS"]:
-                    display_frame = display_frame.copy()
+                    display_frame = np.ascontiguousarray(display_frame)
             except Exception as exc:
                 render_error = repr(exc)
-                display_frame = self._pipeline.get_display_frame(ctx.frame)
+                display_frame = self._fit_to_target(ctx.frame, target_w, target_h)
                 if not is_gate_live:
                     display_frame = _with_gate_chip(display_frame, gate_reason)
                 if not display_frame.flags["C_CONTIGUOUS"]:
-                    display_frame = display_frame.copy()
+                    display_frame = np.ascontiguousarray(display_frame)
 
-            self.frameReady.emit(
+            self._publish(
                 {
                     "context": ctx,
                     "frame": display_frame,
@@ -631,6 +751,18 @@ class RenderWorker(QObject):
             )
             last_render_signature = signature
             next_render_at = time.monotonic() + frame_interval
+
+    @staticmethod
+    def _fit_to_target(frame: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+        source_h, source_w = frame.shape[:2]
+        if source_w <= target_w and source_h <= target_h:
+            return frame
+        scale = min(target_w / source_w, target_h / source_h, 1.0)
+        size = (max(1, int(source_w * scale)), max(1, int(source_h * scale)))
+        # The canvas is normally ~half the source width, where a bilinear
+        # resample is visually equivalent to an area filter at ~1/5 the cost.
+        interpolation = cv2.INTER_LINEAR if scale >= 0.4 else cv2.INTER_AREA
+        return cv2.resize(frame, size, interpolation=interpolation)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -669,6 +801,13 @@ class DetectionWorker(QObject):
         while not self._stop_event.is_set():
             with self._source_lock:
                 source = self._source
+                detection_enabled = self._detection_enabled
+
+            if not detection_enabled:
+                # Nothing to do in this mode; poll cheaply instead of waking
+                # (and downscaling) on every captured frame.
+                time.sleep(0.1)
+                continue
 
             ctx = source.wait_for_frame(self._last_frame_id, timeout=frame_interval)
             if ctx is None or ctx.frame_id == self._last_frame_id:
@@ -678,12 +817,6 @@ class DetectionWorker(QObject):
 
             if ctx.analysis_frame is None:
                 ctx.analysis_frame = _downscale(ctx.frame, 960, 540)
-
-            with self._source_lock:
-                detection_enabled = self._detection_enabled
-            if not detection_enabled:
-                time.sleep(frame_interval)
-                continue
 
             try:
                 entities = self._pipeline.player_detector.detect_and_track(ctx.analysis_frame)

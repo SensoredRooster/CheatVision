@@ -6,13 +6,11 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QPainter, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QFileDialog,
-    QLabel,
     QMainWindow,
     QSplitter,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -24,10 +22,9 @@ from src.core.frame_source import discover_directshow_devices, pick_preferred_ca
 from src.core.live_overlay import PixelVisionLiveOverlay
 from src.ui.advanced_overlay import PixelVisionAdvancedOverlayEngine
 from src.ui.control_bar import ControlBar
-from src.ui.incident_queue import IncidentQueueTable
 from src.ui.left_rail import LeftRail
 from src.ui.playback_controls import PlaybackControlsBar
-from src.ui.theme import APP_STYLESHEET, PANEL, TEXT_MUTED, WARNING
+from src.ui.theme import APP_STYLESHEET, WARNING
 from src.ui.video_canvas import VideoCanvas
 from src.ui.workers import AnalysisWorker, CaptureWorker, DetectionWorker, PlaybackWorker, RenderWorker
 
@@ -36,37 +33,9 @@ from src.ui.workers import AnalysisWorker, CaptureWorker, DetectionWorker, Playb
 _MAX_FLAGGED_TRACK_IDS = 500
 
 
-class VerticalLabel(QWidget):
-    """Narrow collapsed-drawer grip: paints its text rotated 90 degrees instead
-    of wrapping/clipping in a slim vertical strip."""
-
-    def __init__(self, text: str, parent=None):
-        super().__init__(parent)
-        self._text = text
-
-    def setText(self, text: str) -> None:
-        self._text = text
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(PANEL))
-        painter.setPen(QColor(TEXT_MUTED))
-        font = painter.font()
-        font.setPixelSize(10)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.translate(self.width() / 2, self.height() / 2)
-        painter.rotate(-90)
-        metrics = painter.fontMetrics()
-        text_width = metrics.horizontalAdvance(self._text)
-        painter.drawText(int(-text_width / 2), int(metrics.ascent() / 2), self._text)
-        painter.end()
-
-
 class MainWindow(QMainWindow):
-    """Composition root: wires the control bar, canvas, playback controls, and
-    incident queue together with the capture/analysis/playback worker threads."""
+    """Composition root: wires the control bar, tool rail, canvas and playback
+    controls together with the capture/analysis/playback worker threads."""
 
     def __init__(self, settings: dict):
         super().__init__()
@@ -107,6 +76,7 @@ class MainWindow(QMainWindow):
         self._view_mode = "standard"
         self._stream_mode = "live"
         self._last_signal_paint_time = 0.0
+        self._last_slider_paint_time = 0.0
         self._latest_telemetry: dict = {}
         self._event_count = 0
         self._flagged_track_ids: OrderedDict[int, None] = OrderedDict()
@@ -114,6 +84,7 @@ class MainWindow(QMainWindow):
         self._tools_panel_visible = True
         self._tools_panel_width = 268
         self._is_stream_frozen = False
+        self._feed_starved = False
         self._current_device_name = ""
         self._current_device: dict | None = None
 
@@ -149,43 +120,24 @@ class MainWindow(QMainWindow):
         self.control_bar.sourceProfileChanged.connect(self._on_source_profile_changed)
         self.control_bar.toolsPanelToggled.connect(self._on_tools_panel_toggled)
         layout.addWidget(self.control_bar, 0)
+        self.status_label = self.control_bar.status_label
 
         self.body_splitter = QSplitter(Qt.Horizontal, self)
         self.body_splitter.setHandleWidth(1)
 
         self.left_rail = LeftRail(self)
         self.left_rail.analyzeToggled.connect(self._on_analyze_display_toggled)
+        self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
         self.body_splitter.addWidget(self.left_rail)
 
         self.video_canvas = VideoCanvas(self)
         self.body_splitter.addWidget(self.video_canvas)
 
-        self.incidents_drawer = QWidget(self)
-        self.incidents_drawer.setObjectName("IncidentsDrawer")
-        self.incidents_drawer.setMinimumWidth(28)
-        self.incidents_drawer.setMaximumWidth(28)
-        drawer_layout = QVBoxLayout(self.incidents_drawer)
-        drawer_layout.setContentsMargins(0, 0, 0, 0)
-        drawer_layout.setSpacing(0)
-
-        self.incident_queue_table = IncidentQueueTable(self)
-        self.incident_queue_table.seekRequested.connect(self._on_seek_requested)
-        self.incident_queue_table.hide()
-        drawer_layout.addWidget(self.incident_queue_table, 1)
-
-        self.incident_collapse_label = VerticalLabel("INCIDENTS 0")
-        self.incident_collapse_label.setObjectName("IncidentCollapseLabel")
-        drawer_layout.addWidget(self.incident_collapse_label, 1)
-
-        self.body_splitter.addWidget(self.incidents_drawer)
-
         self.body_splitter.setCollapsible(0, True)
         self.body_splitter.setCollapsible(1, False)
-        self.body_splitter.setCollapsible(2, True)
         self.body_splitter.setStretchFactor(0, 0)
         self.body_splitter.setStretchFactor(1, 1)
-        self.body_splitter.setStretchFactor(2, 0)
-        self.body_splitter.setSizes([268, 1000, 28])
+        self.body_splitter.setSizes([268, 1300])
 
         layout.addWidget(self.body_splitter, 1)
 
@@ -196,16 +148,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.playback_controls, 0)
 
         self.setCentralWidget(central)
-
-        status_bar = QStatusBar(self)
-        status_bar.setFixedHeight(22)
-        self.status_label = QLabel("Initializing...")
-        self.status_label.setObjectName("StatusLabel")
-        status_bar.addWidget(self.status_label, 1)
-        self.event_count_label = QLabel("EVENTS: 0")
-        self.event_count_label.setObjectName("EventCountLabel")
-        status_bar.addPermanentWidget(self.event_count_label)
-        self.setStatusBar(status_bar)
 
         self.control_bar.set_stream_mode(self._stream_mode)
         self.control_bar.set_source_profile(str(self.settings.get("source_profile", "hdmi_game")))
@@ -272,6 +214,7 @@ class MainWindow(QMainWindow):
         self._capture_worker.captureError.connect(self._on_capture_error)
         self._capture_worker.streamFrozen.connect(self._on_capture_stream_frozen)
         self._capture_worker.waitingForDevice.connect(self._on_waiting_for_capture)
+        self._capture_worker.feedRateMeasured.connect(self._on_feed_rate_measured)
         self._capture_thread.started.connect(self._capture_worker.start)
 
     def _launch_capture(self, device: dict | None) -> None:
@@ -465,16 +408,13 @@ class MainWindow(QMainWindow):
             self.left_rail.setMaximumWidth(16777215)
             self.left_rail.hide()
         sizes = self.body_splitter.sizes()
-        if len(sizes) != 3:
+        if len(sizes) != 2:
             return
-        right_width = max(28, sizes[2])
         total = max(sum(sizes), self.width())
         if visible:
-            center_width = max(320, total - self._tools_panel_width - right_width)
-            self.body_splitter.setSizes([self._tools_panel_width, center_width, right_width])
+            self.body_splitter.setSizes([self._tools_panel_width, max(320, total - self._tools_panel_width)])
         else:
-            center_width = max(320, total - right_width)
-            self.body_splitter.setSizes([0, center_width, right_width])
+            self.body_splitter.setSizes([0, max(320, total)])
 
     def _apply_source_profile(self, profile: str) -> None:
         self.settings["source_profile"] = profile
@@ -502,22 +442,33 @@ class MainWindow(QMainWindow):
     def _on_capture_source_opened(self, width: int, height: int, fps: float, backend: str) -> None:
         self._stream_mode = "live"
         self._is_stream_frozen = False
+        if self._feed_starved:
+            self._feed_starved = False
+            self.status_label.setStyleSheet("")
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
         self._update_signal_card()
-        self.settings["capture_width"] = int(width)
-        self.settings["capture_height"] = int(height)
-        if fps > 0:
-            self.settings["capture_fps"] = int(round(fps))
+        # The requested mode (settings.json / manual pick) is deliberately NOT
+        # overwritten with what was negotiated: a browser-window or degraded
+        # session used to leak its geometry back into the "requested" values,
+        # so the next HDMI calibration asked for e.g. 3456x1408@30, found it
+        # unadvertised, and fell through to the largest mode on the card (4K).
         self.pipeline.update_target_resolution(width, height)
         self.dataset_exporter.set_target_resolution(width, height)
+        input_mode = self._capture_worker.input_mode() if self._capture_worker is not None else None
         override = self.settings.get("capture_resolution_override")
-        override_rejected = override is not None and (
-            int(override.get("width", 0)) != width
-            or int(override.get("height", 0)) != height
-            or int(override.get("fps", 0)) != int(round(fps))
-        )
+        override_rejected = False
+        if override is not None:
+            wanted = (int(override.get("width", 0)), int(override.get("height", 0)), int(override.get("fps", 0)))
+            # Compare against the mode actually negotiated with the device;
+            # the preview may legitimately be a downscale of it (4K -> 1440p).
+            got = input_mode if input_mode is not None else (int(width), int(height), int(round(fps)))
+            override_rejected = wanted != got
         self._live_status_text = f"LIVE · {width}×{height} @ {fps:.0f} · {backend}"
+        if input_mode is not None and (input_mode[0], input_mode[1]) != (int(width), int(height)):
+            self._live_status_text = (
+                f"LIVE · {input_mode[0]}×{input_mode[1]} @ {fps:.0f} → {width}×{height} preview · {backend}"
+            )
         if override_rejected:
             self._live_status_text += (
                 f" · ⚠ manual {override['width']}×{override['height']}@{override['fps']} not supported, auto-calibrated instead"
@@ -570,6 +521,26 @@ class MainWindow(QMainWindow):
         self.video_canvas.set_idle_text("Waiting for capture device")
         self.status_label.setText("Waiting for capture device")
 
+    @Slot(float, float, bool)
+    def _on_feed_rate_measured(self, delivered_fps: float, unique_fps: float, starved: bool) -> None:
+        self.left_rail.set_feed_rate(delivered_fps, unique_fps, starved=starved)
+        if unique_fps > 0 and not self.dataset_exporter.is_recording_baseline:
+            # Only new pictures are recorded, so the file must be stamped with
+            # the unique-picture rate or it plays back too fast/slow.
+            self.dataset_exporter.set_baseline_fps(round(unique_fps))
+        if starved and not self._feed_starved:
+            self._feed_starved = True
+            requested = int(self.settings.get("capture_fps", 0) or 0)
+            self.status_label.setText(
+                f"{self._current_base_status_text()} · ⚠ CAPTURE CARD DELIVERING ONLY {delivered_fps:.0f} FPS"
+                f"{f' OF {requested}' if requested else ''} — another app (OBS/Streamlabs/RECentral) is probably using it"
+            )
+            self.status_label.setStyleSheet(f"color: {WARNING};")
+        elif not starved and self._feed_starved:
+            self._feed_starved = False
+            self.status_label.setStyleSheet("")
+            self.status_label.setText(self._status_text_with_mode())
+
     @Slot(int, int, float, int)
     def _on_playback_source_opened(self, width: int, height: int, fps: float, total_frames: int) -> None:
         self.pipeline.update_target_resolution(width, height)
@@ -597,8 +568,7 @@ class MainWindow(QMainWindow):
 
     def _on_cheat_event_detected(self, event: CheatEvent) -> None:
         self._event_count += 1
-        self.event_count_label.setText(f"EVENTS: {self._event_count}")
-        self.incident_queue_table.add_event(event)
+        self.left_rail.add_incident(event)
 
         associated_track_id = event.telemetry_data.get("associated_track_id")
         if associated_track_id is not None:
@@ -610,14 +580,6 @@ class MainWindow(QMainWindow):
                 self._render_worker.set_flagged_track_ids(self._flagged_track_ids.keys())
         if self._render_worker is not None:
             self._render_worker.push_flagged_event(event)
-
-        if self._event_count == 1:
-            self.incident_collapse_label.hide()
-            self.incident_queue_table.show()
-            self.incidents_drawer.setMaximumWidth(320)
-            sizes = self.body_splitter.sizes()
-            sizes[2] = 320
-            self.body_splitter.setSizes(sizes)
 
     def _on_telemetry_updated(self, telemetry: dict) -> None:
         self._latest_telemetry = telemetry
@@ -673,15 +635,23 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
-    @Slot(object)
-    def _on_rendered_frame(self, payload: dict) -> None:
+    @Slot()
+    def _on_rendered_frame(self) -> None:
+        if self._render_worker is None:
+            return
+        payload = self._render_worker.take_latest()
+        if payload is None:
+            return
         ctx = payload.get("context")
         display_frame = payload.get("frame")
         render_error = payload.get("render_error")
         if ctx is None or display_frame is None:
             return
         if self._stream_mode == "vod":
-            self.playback_controls.set_current_frame(ctx.frame_id)
+            now = time.monotonic()
+            if now - self._last_slider_paint_time >= (1.0 / 30.0):
+                self._last_slider_paint_time = now
+                self.playback_controls.set_current_frame(ctx.frame_id)
         try:
             self.video_canvas.set_frame(ctx, display_frame)
         except Exception as exc:
@@ -693,6 +663,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"{base_text} -- ⚠ render error (frame {ctx.frame_id}): {render_error}")
         elif (
             self._stream_mode == "live"
+            and not self._feed_starved
             and self.status_label.text() != mode_text
             and "NO PIXEL CHANGE" not in self.status_label.text()
         ):
@@ -710,6 +681,8 @@ class MainWindow(QMainWindow):
         self._stop_baseline_safe()
         self._teardown_capture()
         self._teardown_playback()
+        # Let an in-flight recording write its mp4 trailer before exit.
+        self.dataset_exporter.wait_for_pending_writes(10.0)
         if self._detection_worker is not None:
             self._detection_worker.stop()
         if self._detection_thread is not None:

@@ -26,3 +26,6 @@ startup_crash.log
 data/eval_synthetic/
 data/training.csv
 
+
+# Generated evaluation output
+data/**/eval_report.json
