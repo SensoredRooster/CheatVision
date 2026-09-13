@@ -90,14 +90,25 @@ QFrame#ChipGroup QPushButton {{
     border-radius: 10px;
 }}
 
+QFrame#SessionGroup {{
+    background: transparent;
+    border: none;
+}}
+
+QPushButton#BaselineButton {{
+    padding: 4px 12px;
+}}
+
 QLabel#ModePill {{
     background-color: {PANEL_ALT};
     border: 1px solid {ACCENT_DIM};
-    border-radius: 10px;
-    padding: 3px 10px;
-    font-size: 10px;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
     font-weight: bold;
     color: {TEXT_MUTED};
+    min-height: 0px;
+    max-height: 22px;
 }}
 
 QLabel#ModePill[mode="live"] {{
