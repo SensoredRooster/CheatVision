@@ -23,6 +23,20 @@ from src.ui.theme import ACCENT, ACCENT_DIM, ALERT, HAIRLINE, TEXT_MUTED, VOD_AC
 RAIL_WIDTH = 268
 RAIL_SIDE_MARGIN = 12
 
+_PROFILE_LABELS = {"hdmi_game": "HDMI GAME", "stream_window": "STREAM WIN", "vod_file": "VOD FILE"}
+
+
+def _short_device_name(name: str) -> str:
+    """Trim vendor boilerplate so 'device · profile' fits the 268px rail."""
+    short = name
+    for prefix in ("AVerMedia HD Capture ", "AVerMedia ", "Elgato ", "Logitech "):
+        if short.startswith(prefix):
+            short = short[len(prefix):]
+            break
+    short = short.replace("Streaming Center", "StreamCenter")
+    short = short.replace(" Virtual Camera", " VCam").replace(" Virtual Cam", " VCam").replace(" Virtual Webcam", " VCam")
+    return short.strip() or name
+
 
 class AimGraph(QWidget):
     def __init__(self, parent=None):
@@ -122,23 +136,8 @@ class MetricRow(QWidget):
             self._value.setStyleSheet("")
 
 
-class WidgetRow(QWidget):
-    """Metric-style row whose value is an interactive widget (e.g. a combo)."""
-
-    def __init__(self, key: str, widget: QWidget, parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        self._key = QLabel(key.upper())
-        self._key.setObjectName("RailMetricKey")
-        layout.addWidget(self._key, 0)
-        layout.addStretch(1)
-        layout.addWidget(widget, 0, Qt.AlignRight)
-
-
 class RailSection(QFrame):
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, parent=None, *, centered_title: bool = False):
         super().__init__(parent)
         self.setObjectName("RailCard")
         self.layout = QVBoxLayout(self)
@@ -146,6 +145,8 @@ class RailSection(QFrame):
         self.layout.setSpacing(6)
         self._heading = QLabel(title.upper())
         self._heading.setObjectName("RailCardTitle")
+        if centered_title:
+            self._heading.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.layout.addWidget(self._heading)
 
     def set_title(self, title: str) -> None:
@@ -157,9 +158,15 @@ class RailSection(QFrame):
 
 class LeftRail(QWidget):
     analyzeToggled = Signal(bool)
-    sourceProfileChanged = Signal(str)
     recordBaselineToggled = Signal()
-    deviceSelected = Signal(str)
+    # (device_name, source_profile) chosen in the SOURCE selector.
+    sourceSelected = Signal(str, str)
+
+    _SELECTOR_HELP = (
+        "Video device + profile. The capture card serves one app at a time; pick a Virtual "
+        "Camera entry (Streaming Center / OBS) to analyse while that app records. The profile "
+        "part (HDMI GAME / STREAM WINDOW / VOD FILE) decides which screen regions are ignored."
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -188,40 +195,32 @@ class LeftRail(QWidget):
         # negotiated mode, real feed rate, pipe, source profile (selectable),
         # and the profile's ignore-rect count / baseline recording state.
         self.source = RailSection("Source")
-        # Device picker: the capture card, or another app's virtual camera so
-        # that app can record/stream the card while CheatVision analyses it.
-        self.device_combo = QComboBox()
-        self.device_combo.setObjectName("SourceCombo")
-        self.device_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.device_combo.setMinimumContentsLength(18)
-        self.device_combo.setToolTip(
-            "Video device. The capture card serves one app at a time; pick a Virtual Camera "
-            "(Streaming Center / OBS) to analyse while that app records."
-        )
-        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+        # One selector for *where the picture comes from and how to read it*:
+        # each entry is a device (capture card, or another app's virtual
+        # camera so that app can record while CheatVision analyses) paired
+        # with a source profile (which screen regions to ignore). Picking an
+        # entry sets both, so there is no separate PROFILE row.
+        self.source_combo = QComboBox()
+        self.source_combo.setObjectName("SourceCombo")
+        self.source_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.source_combo.setMinimumContentsLength(18)
+        self.source_combo.setToolTip(self._SELECTOR_HELP)
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         self._source_mode = MetricRow("Mode")
         self._source_feed = MetricRow("Feed")
         self._source_backend = MetricRow("Pipe")
-        self.profile_combo = QComboBox()
-        self.profile_combo.setObjectName("SourceCombo")
-        self.profile_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self.profile_combo.setToolTip(
-            "Source profile: ignore stream chrome / facecam and scene-gate kinematics."
-        )
-        for text, profile in (("HDMI GAME", "hdmi_game"), ("STREAM WINDOW", "stream_window"), ("VOD FILE", "vod_file")):
-            self.profile_combo.addItem(text, profile)
-        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        self._profile_row = WidgetRow("Profile", self.profile_combo)
         self._ignore_row = MetricRow("Ignore")
         self._baseline_row = MetricRow("Base")
-        self.source.add_row(self.device_combo)
+        self.source.add_row(self.source_combo)
         self.source.add_row(self._source_mode)
         self.source.add_row(self._source_feed)
         self.source.add_row(self._source_backend)
-        self.source.add_row(self._profile_row)
         self.source.add_row(self._ignore_row)
         self.source.add_row(self._baseline_row)
         root.addWidget(self.source)
+        self._devices: list[dict] = []
+        self._current_device_name = ""
+        self._current_profile = "hdmi_game"
 
         self.detect = RailSection("Detect")
         self._yolo_row = MetricRow("Yolo")
@@ -253,7 +252,7 @@ class LeftRail(QWidget):
 
         # Flagged events live here (the only place), filling the rest of the
         # rail; double-click a row to seek a mounted VOD to that frame.
-        self.incidents = RailSection("Incidents · 0")
+        self.incidents = RailSection("Incidents · 0", centered_title=True)
         self.incident_table = IncidentQueueTable(self)
         self.incident_table.setMinimumHeight(90)
         self.incident_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -261,38 +260,57 @@ class LeftRail(QWidget):
         root.addWidget(self.incidents, 1)
         self._incident_count = 0
 
-    def _on_profile_changed(self, index: int) -> None:
-        profile = self.profile_combo.itemData(index)
-        if profile:
-            self.sourceProfileChanged.emit(str(profile))
+    def _on_source_changed(self, index: int) -> None:
+        data = self.source_combo.itemData(index)
+        if not data:
+            return
+        device_name, profile = data
+        self._current_device_name = device_name
+        self._current_profile = profile
+        self.sourceSelected.emit(str(device_name), str(profile))
 
-    def _on_device_changed(self, index: int) -> None:
-        name = self.device_combo.itemData(index)
-        if name:
-            self.deviceSelected.emit(str(name))
-
-    def set_devices(self, devices: list[dict], current_name: str) -> None:
-        """Populate the picker; entries carry the DirectShow device name."""
-        self.device_combo.blockSignals(True)
-        self.device_combo.clear()
-        for device in devices:
-            name = str(device.get("name", ""))
-            if not name:
-                continue
-            kind = str(device.get("kind", "Input"))
-            self.device_combo.addItem(f"{name}  ·  {kind.upper()}", name)
-        index = self.device_combo.findData(current_name)
-        if index >= 0:
-            self.device_combo.setCurrentIndex(index)
-        self.device_combo.blockSignals(False)
+    def set_devices(self, devices: list[dict], current_name: str, current_profile: str | None = None) -> None:
+        """Rebuild the selector: one entry per (device, profile) pair. The
+        capture card gets HDMI GAME and STREAM WINDOW (some people capture a
+        browser through the card); virtual cameras and webcams get all three."""
+        self._devices = [d for d in devices if str(d.get("name", ""))]
+        if current_profile:
+            self._current_profile = current_profile
+        self._current_device_name = current_name
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        for device in self._devices:
+            name = str(device["name"])
+            kind = str(device.get("kind", "Input")).lower()
+            profiles = ("hdmi_game", "stream_window") if kind == "capture card" else ("hdmi_game", "stream_window", "vod_file")
+            for profile in profiles:
+                label = f"{_short_device_name(name)} · {_PROFILE_LABELS[profile]}"
+                self.source_combo.addItem(label, (name, profile))
+        self._select_current()
+        self.source_combo.blockSignals(False)
 
     def set_source_profile(self, profile: str) -> None:
-        index = self.profile_combo.findData(profile)
-        if index < 0 or index == self.profile_combo.currentIndex():
+        """Reflect a profile change made elsewhere (e.g. importing a VOD)."""
+        if profile == self._current_profile:
             return
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.setCurrentIndex(index)
-        self.profile_combo.blockSignals(False)
+        self._current_profile = profile
+        self.source_combo.blockSignals(True)
+        self._select_current()
+        self.source_combo.blockSignals(False)
+
+    def _select_current(self) -> None:
+        wanted = (self._current_device_name, self._current_profile)
+        for i in range(self.source_combo.count()):
+            if self.source_combo.itemData(i) == wanted:
+                self.source_combo.setCurrentIndex(i)
+                return
+        # Device present but this profile isn't offered for it: fall back to
+        # the device's first entry rather than showing a wrong device.
+        for i in range(self.source_combo.count()):
+            if self.source_combo.itemData(i)[0] == self._current_device_name:
+                self.source_combo.setCurrentIndex(i)
+                self._current_profile = self.source_combo.itemData(i)[1]
+                return
 
     def set_recording_baseline(self, active: bool, stream_mode: str = "live") -> None:
         if stream_mode == "vod":
@@ -311,8 +329,9 @@ class LeftRail(QWidget):
         self.incidents.set_title("Incidents · 0")
 
     def set_source(self, name: str, mode: str, backend: str, *, low_mode: bool = False) -> None:
-        # The device name is shown by the dropdown; keep it as a tooltip only.
-        self.device_combo.setToolTip(name or self.device_combo.toolTip())
+        # The selector shows a shortened device name; keep the full one as its tooltip.
+        if name:
+            self.source_combo.setToolTip(f"{name}\n\n{self._SELECTOR_HELP}")
         if low_mode:
             self._source_mode.set_value("low mode", warn=True)
         else:

@@ -130,9 +130,8 @@ class MainWindow(QMainWindow):
 
         self.left_rail = LeftRail(self)
         self.left_rail.analyzeToggled.connect(self._on_analyze_display_toggled)
-        self.left_rail.sourceProfileChanged.connect(self._on_source_profile_changed)
         self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
-        self.left_rail.deviceSelected.connect(self._on_device_selected)
+        self.left_rail.sourceSelected.connect(self._on_source_selected)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
         self.left_rail.incident_table.incidentActivated.connect(self._on_incident_activated)
         self.body_splitter.addWidget(self.left_rail)
@@ -167,7 +166,7 @@ class MainWindow(QMainWindow):
         devices = discover_directshow_devices()
         preferred = self._choose_startup_device(devices)
         self._known_devices = devices
-        self.left_rail.set_devices(devices, str(preferred.get("name", "")) if preferred else "")
+        self.left_rail.set_devices(devices, str(preferred.get("name", "")) if preferred else "", str(self.settings.get("source_profile", "hdmi_game")))
 
         self._capture_worker, self._capture_thread = self._make_capture_worker(preferred)
 
@@ -366,7 +365,7 @@ class MainWindow(QMainWindow):
         self._known_devices = devices
         preferred = self._choose_startup_device(devices)
         preferred_name = str(preferred.get("name", "")) if preferred else ""
-        self.left_rail.set_devices(devices, preferred_name)
+        self.left_rail.set_devices(devices, preferred_name, str(self.settings.get("source_profile", "hdmi_game")))
 
         capture_alive = self._capture_thread is not None and self._capture_thread.isRunning()
         if preferred_name == self._current_device_name and capture_alive:
@@ -384,17 +383,29 @@ class MainWindow(QMainWindow):
                     return device
         return pick_preferred_capture_device(devices)
 
-    def _on_device_selected(self, device_name: str) -> None:
+    def _on_source_selected(self, device_name: str, profile: str) -> None:
+        """SOURCE selector: a (device, profile) pair. Apply both, restart capture once."""
         device = next((d for d in self._known_devices if str(d.get("name", "")) == device_name), None)
         if device is None:
             return
+        previous_profile = str(self.settings.get("source_profile", "hdmi_game"))
+        if profile != previous_profile:
+            self.settings["source_profile"] = profile
+            self.pipeline.set_source_profile(profile)
+            self._persist_setting("source_profile", profile)
+            self._update_signal_card()
         self.settings["capture_device_name"] = device_name
         self.settings["capture_device_kind"] = str(device.get("kind", ""))
         self._persist_setting("capture_device_name", device_name)
         self._persist_setting("capture_device_kind", str(device.get("kind", "")))
-        if device_name == self._current_device_name and self._capture_thread is not None and self._capture_thread.isRunning():
+        capture_alive = self._capture_thread is not None and self._capture_thread.isRunning()
+        if device_name == self._current_device_name and profile == previous_profile and capture_alive:
             return
-        self.status_label.setText(f"Switching source: {device.get('label', device_name)}")
+        if self._stream_mode != "live" and device_name == self._current_device_name:
+            # Reviewing a VOD: the profile change applies to the pipeline; no capture restart.
+            self.status_label.setText(self._status_text_with_mode())
+            return
+        self.status_label.setText(f"Switching source: {device.get('label', device_name)} · {SOURCE_PROFILE_LABELS.get(profile, profile)}")
         self._restart_capture(device)
 
     def _persist_setting(self, key: str, value) -> None:
@@ -482,12 +493,6 @@ class MainWindow(QMainWindow):
         self.left_rail.set_source_profile(profile)
         self.status_label.setText(self._status_text_with_mode())
         self._update_signal_card()
-
-    def _on_source_profile_changed(self, profile: str) -> None:
-        previous = str(self.settings.get("source_profile", "hdmi_game"))
-        self._apply_source_profile(profile)
-        if self._stream_mode == "live" and previous != profile:
-            self._restart_capture(self._current_device)
 
     def _update_detection_enabled(self) -> None:
         if self._detection_worker is None:

@@ -88,10 +88,9 @@ card. Check the HDMI cable and that the gaming PC/console is outputting.
 │ [RECORD CLEAN  │                                                 │
 │   BASELINE]    │                                                 │
 │ ┌ SOURCE ────┐ │                                                 │
-│ │ device ▾   │ │                                                 │
+│ │ device·prof▾│ │                                                 │
 │ │ MODE FEED  │ │              live video                         │
 │ │ PIPE       │ │       (fills to the window edge)                │
-│ │ PROFILE ▾  │ │                                                 │
 │ │ IGNORE BASE│ │                                                 │
 │ ├ DETECT ────┤ │                                                 │
 │ ├ SIGNAL ────┤ │                                                 │
@@ -114,12 +113,10 @@ card. Check the HDMI cable and that the gaming PC/console is outputting.
 
 | row | meaning |
 |---|---|
-| device dropdown | which video device to read. Capture card, or a **Virtual Camera** (see §5). Remembered across restarts. |
-| device name | the DirectShow name as Windows reports it |
+| source selector | **device · profile** in one pick, e.g. `GC573 1 · HDMI GAME` or `StreamCenter VCam · STREAM WIN`. The device is *what to read* (capture card, or another app's **Virtual Camera**, see §5); the profile is *which screen regions to ignore* (see §6). Hover it for the full device name. Remembered across restarts. |
 | **MODE** | resolution and rate **requested** from the device, e.g. `2560×1440 @ 144` |
 | **FEED** | what the device is **really delivering**: `71 fps (60 new)` = 71 frames/s handed over, 60 of them new pictures. This is the honest number — see §7. Turns red if starved. |
 | **PIPE** | how frames get in: `CAP_FFMPEG` (card), `VIRTUAL_CAM`, `GDI_BROWSER`, `MSS` (screen), `VOD` |
-| **PROFILE** | `HDMI GAME` / `STREAM WINDOW` / `VOD FILE` — tells the analyser which screen regions to ignore (see §6) |
 | IGNORE | how many ignore rectangles the profile is applying |
 | BASE | `idle` or `rec` while a baseline is recording |
 
@@ -187,7 +184,7 @@ The fix is built in:
 
 1. In Streaming Center (or OBS), select the card as the source and turn on its
    **Virtual Camera** output. Record/stream as usual.
-2. In CheatVision, SOURCE → device dropdown → **Streaming Center Virtual Camera**
+2. In CheatVision, SOURCE → selector → **StreamCenter VCam · HDMI GAME**
    (or *OBS Virtual Camera*).
 3. PIPE shows `VIRTUAL_CAM`, FEED shows `60 fps`. Both apps now run together.
 
@@ -202,7 +199,7 @@ CheatVision says so after 4 s instead of showing a frozen picture.
 
 ## 6. Profiles — telling the analyser what to ignore
 
-**PROFILE** (SOURCE card) chooses which parts of the screen are *not* gameplay:
+The **profile** half of the SOURCE selector chooses which parts of the screen are *not* gameplay:
 
 | profile | pick it when | ignores |
 |---|---|---|
@@ -210,7 +207,7 @@ CheatVision says so after 4 s instead of showing a frozen picture.
 | `STREAM WINDOW` | watching a Twitch/Kick/YouTube stream in a browser | top and bottom stream chrome, chat column on the right, facecam |
 | `VOD FILE` | a recorded stream with overlays baked in | same as STREAM WINDOW |
 
-Changing the profile while live restarts capture (a couple of seconds).
+Picking a different entry while live restarts capture once (a couple of seconds), even if only the profile changed. Importing a VOD switches the profile to `VOD FILE` automatically.
 
 The **game profile** (`config/settings.json` → `game_profile`: `warzone` or
 `generic`) sets where the HUD is (minimap, ammo) so it is masked out, and where
@@ -343,7 +340,7 @@ The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
 
 1. Plug in / power the source. Start Streaming Center **before** CheatVision if you want to record.
 2. `python main.py`.
-3. SOURCE → pick the card, or the Virtual Camera if you're recording.
+3. SOURCE → pick `GC573 1 · HDMI GAME`, or a `StreamCenter VCam · …` entry if you're recording.
 4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows ~60 new.
 5. Play. Watch INCIDENTS. Double-check anything flagged by eye.
 6. Optional: RECORD CLEAN BASELINE during matches you know are legit.
@@ -505,7 +502,7 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | piece | job |
 |---|---|
 | `ControlBar` | IMPORT, RESCAN, TOOLS, elided status text, RES/FPS pins (VOD only) |
-| `LeftRail` | centred brand, RECORD CLEAN BASELINE, SOURCE (device + profile combos, MODE/FEED/PIPE, IGNORE/BASE), DETECT, SIGNAL, INCIDENTS |
+| `LeftRail` | centred brand, RECORD CLEAN BASELINE, SOURCE (device·profile selector, MODE/FEED/PIPE, IGNORE/BASE), DETECT, SIGNAL, INCIDENTS (centred title) |
 | `VideoCanvas` | paints the latest rendered frame; emits `viewportResized` so the render target always matches the real canvas (a 320×180 placeholder used to be upscaled ~4× until the first window resize) |
 
 ## Layout
