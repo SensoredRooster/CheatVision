@@ -222,8 +222,8 @@ VOD scrubber appears under the canvas only while a file is mounted.
 
 | piece | job |
 |---|---|
-| `ControlBar` | Import VOD, Rescan, TOOLS, SRC profile, live status text (mode · profile · warnings, elided with tooltip), optional RES/FPS, clean baseline |
-| `LeftRail` | SOURCE (mode / feed rate / low mode), SIGNAL (STR + TREMOR sparkline), DETECT (YOLO / tracks / gate), PROFILE, INCIDENTS (flag table with count; double-click seeks a VOD) |
+| `ControlBar` | Import VOD, Rescan, TOOLS, live status text (mode · profile · warnings, elided with tooltip), optional RES/FPS pins (VOD only) |
+| `LeftRail` | centred brand + **RECORD CLEAN BASELINE**; SOURCE (device, mode, feed rate, pipe, **source profile combo**, ignore-rect count, baseline state); DETECT (YOLO / tracks / gate / ANALYZE LIVE); SIGNAL (STR + TREMOR sparkline); INCIDENTS (flag table with count; double-click seeks a VOD) |
 | `VideoCanvas` | paints the latest rendered frame; `RenderWorker` builds it off the UI thread and hands it over through a single-slot mailbox (no backlog) |
 | View modes | STANDARD, HEATMAP, FLAGGED |
 
@@ -235,7 +235,7 @@ not live, skip overlays and stamp `GATE:<reason>`.
 
 ## Source and game profiles
 
-`source_profile` (`config/settings.json` or SRC combo):
+`source_profile` (`config/settings.json` or the PROFILE combo in the SOURCE card):
 
 | id | use | ignore rects |
 |---|---|---|

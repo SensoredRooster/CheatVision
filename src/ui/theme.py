@@ -93,6 +93,12 @@ QFrame#SessionGroup {{
 
 QPushButton#BaselineButton {{
     padding: 4px 12px;
+    font-size: 10px;
+    letter-spacing: 1px;
+}}
+
+QPushButton#BaselineButton:checked {{
+    background-color: {ACCENT_DIM};
 }}
 
 QLabel#ModePill {{
@@ -137,12 +143,7 @@ QLabel#RailBrand {{
     font-size: 13px;
     font-weight: bold;
     letter-spacing: 2px;
-}}
-
-QLabel#RailTag {{
-    color: {TEXT_MUTED};
-    font-size: 10px;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }}
 
 QFrame#RailCard {{
@@ -224,8 +225,15 @@ QComboBox {{
     min-width: 64px;
 }}
 
+QComboBox#SourceCombo {{
+    font-size: 10px;
+    padding: 2px 6px;
+    min-width: 0px;
+}}
+
 QComboBox::drop-down {{
     border: none;
+    width: 14px;
 }}
 
 QComboBox QAbstractItemView {{

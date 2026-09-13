@@ -6,9 +6,11 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -116,6 +118,21 @@ class MetricRow(QWidget):
             self._value.setStyleSheet("")
 
 
+class WidgetRow(QWidget):
+    """Metric-style row whose value is an interactive widget (e.g. a combo)."""
+
+    def __init__(self, key: str, widget: QWidget, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._key = QLabel(key.upper())
+        self._key.setObjectName("RailMetricKey")
+        layout.addWidget(self._key, 0)
+        layout.addStretch(1)
+        layout.addWidget(widget, 0, Qt.AlignRight)
+
+
 class RailSection(QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -136,6 +153,8 @@ class RailSection(QFrame):
 
 class LeftRail(QWidget):
     analyzeToggled = Signal(bool)
+    sourceProfileChanged = Signal(str)
+    recordBaselineToggled = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,11 +168,20 @@ class LeftRail(QWidget):
 
         brand = QLabel("CHEATVISION")
         brand.setObjectName("RailBrand")
-        tag = QLabel("review console")
-        tag.setObjectName("RailTag")
+        brand.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         root.addWidget(brand)
-        root.addWidget(tag)
 
+        # Recording control lives in the rail, right under the brand.
+        self.record_baseline_btn = QPushButton("RECORD CLEAN BASELINE")
+        self.record_baseline_btn.setObjectName("BaselineButton")
+        self.record_baseline_btn.setFixedHeight(28)
+        self.record_baseline_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.record_baseline_btn.clicked.connect(self.recordBaselineToggled.emit)
+        root.addWidget(self.record_baseline_btn)
+
+        # One card for everything about where the picture comes from: device,
+        # negotiated mode, real feed rate, pipe, source profile (selectable),
+        # and the profile's ignore-rect count / baseline recording state.
         self.source = RailSection("Source")
         self._source_name = QLabel("—")
         self._source_name.setObjectName("RailCardBody")
@@ -161,23 +189,26 @@ class LeftRail(QWidget):
         self._source_mode = MetricRow("Mode")
         self._source_feed = MetricRow("Feed")
         self._source_backend = MetricRow("Pipe")
+        self.profile_combo = QComboBox()
+        self.profile_combo.setObjectName("SourceCombo")
+        self.profile_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.profile_combo.setToolTip(
+            "Source profile: ignore stream chrome / facecam and scene-gate kinematics."
+        )
+        for text, profile in (("HDMI GAME", "hdmi_game"), ("STREAM WINDOW", "stream_window"), ("VOD FILE", "vod_file")):
+            self.profile_combo.addItem(text, profile)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        self._profile_row = WidgetRow("Profile", self.profile_combo)
+        self._ignore_row = MetricRow("Ignore")
+        self._baseline_row = MetricRow("Base")
         self.source.add_row(self._source_name)
         self.source.add_row(self._source_mode)
         self.source.add_row(self._source_feed)
         self.source.add_row(self._source_backend)
+        self.source.add_row(self._profile_row)
+        self.source.add_row(self._ignore_row)
+        self.source.add_row(self._baseline_row)
         root.addWidget(self.source)
-
-        self.signal = RailSection("Signal")
-        self._signal_status = QLabel("ok")
-        self._signal_status.setObjectName("RailStatusOk")
-        self._signal_str = MetricRow("Str")
-        self._signal_tremor = MetricRow("Tremor")
-        self._sparkline = AimGraph(self)
-        self.signal.add_row(self._signal_status)
-        self.signal.add_row(self._signal_str)
-        self.signal.add_row(self._signal_tremor)
-        self.signal.add_row(self._sparkline)
-        root.addWidget(self.signal)
 
         self.detect = RailSection("Detect")
         self._yolo_row = MetricRow("Yolo")
@@ -195,14 +226,17 @@ class LeftRail(QWidget):
         self.detect.add_row(self.analyze_checkbox)
         root.addWidget(self.detect)
 
-        self.profile = RailSection("Profile")
-        self._profile_row = MetricRow("Src")
-        self._ignore_row = MetricRow("Ignore")
-        self._baseline_row = MetricRow("Base")
-        self.profile.add_row(self._profile_row)
-        self.profile.add_row(self._ignore_row)
-        self.profile.add_row(self._baseline_row)
-        root.addWidget(self.profile)
+        self.signal = RailSection("Signal")
+        self._signal_status = QLabel("ok")
+        self._signal_status.setObjectName("RailStatusOk")
+        self._signal_str = MetricRow("Str")
+        self._signal_tremor = MetricRow("Tremor")
+        self._sparkline = AimGraph(self)
+        self.signal.add_row(self._signal_status)
+        self.signal.add_row(self._signal_str)
+        self.signal.add_row(self._signal_tremor)
+        self.signal.add_row(self._sparkline)
+        root.addWidget(self.signal)
 
         # Flagged events live here (the only place), filling the rest of the
         # rail; double-click a row to seek a mounted VOD to that frame.
@@ -213,6 +247,25 @@ class LeftRail(QWidget):
         self.incidents.add_row(self.incident_table)
         root.addWidget(self.incidents, 1)
         self._incident_count = 0
+
+    def _on_profile_changed(self, index: int) -> None:
+        profile = self.profile_combo.itemData(index)
+        if profile:
+            self.sourceProfileChanged.emit(str(profile))
+
+    def set_source_profile(self, profile: str) -> None:
+        index = self.profile_combo.findData(profile)
+        if index < 0 or index == self.profile_combo.currentIndex():
+            return
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.setCurrentIndex(index)
+        self.profile_combo.blockSignals(False)
+
+    def set_recording_baseline(self, active: bool, stream_mode: str = "live") -> None:
+        if stream_mode == "vod":
+            self.record_baseline_btn.setText("STOP MARKING CLEAN" if active else "MARK VOD AS CLEAN")
+        else:
+            self.record_baseline_btn.setText("STOP BASELINE" if active else "RECORD CLEAN BASELINE")
 
     def add_incident(self, event) -> None:
         self._incident_count += 1
@@ -263,9 +316,9 @@ class LeftRail(QWidget):
         self._gate_row.set_value(gate or "live", warn=skipped)
 
     def set_profile(self, name: str, ignore_count: int, baseline: str) -> None:
-        self._profile_row.set_value(name or "—")
+        # The profile itself is shown by the combo; only the derived state here.
         self._ignore_row.set_value(str(int(ignore_count)))
-        self._baseline_row.set_value(baseline or "idle")
+        self._baseline_row.set_value(baseline or "idle", warn=(baseline == "rec"))
 
     def set_analyze_checked(self, checked: bool) -> None:
         if self.analyze_checkbox.isChecked() == checked:

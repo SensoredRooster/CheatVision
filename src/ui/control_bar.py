@@ -71,10 +71,8 @@ class ControlBar(QWidget):
 
     mountVodRequested = Signal()
     viewModeChanged = Signal(str)
-    recordBaselineToggled = Signal()
     rescanDevicesRequested = Signal()
     analyzeDisplayToggled = Signal(bool)
-    sourceProfileChanged = Signal(str)
     captureModeChanged = Signal(int, int, int)
     toolsPanelToggled = Signal(bool)
 
@@ -105,30 +103,15 @@ class ControlBar(QWidget):
         self.tools_panel_btn.toggled.connect(self._on_tools_panel_toggled)
         layout.addWidget(self.tools_panel_btn)
 
-        self.profile_combo = QComboBox()
-        self.profile_combo.setObjectName("SourceCombo")
-        self.profile_combo.setToolTip(
-            "Source profile: ignore stream chrome / facecam and scene-gate kinematics."
-        )
-        for text, profile in (("HDMI", "hdmi_game"), ("STREAM", "stream_window"), ("VOD", "vod_file")):
-            self.profile_combo.addItem(text, profile)
-        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        layout.addWidget(self.profile_combo)
-
-        # Live status (mode, profile, warnings) lives here now instead of a
-        # bottom status bar, so the video reaches the window edge.
+        # Live status (mode, profile, warnings) lives here instead of a bottom
+        # status bar, so the video reaches the window edge. Source profile and
+        # baseline recording moved into the tool rail's SOURCE card.
         self.status_label = StatusLabel("Initializing...")
         self.status_label.setObjectName("StatusLabel")
         layout.addWidget(self.status_label, 1)
 
         self.capture_mode_group = self._build_capture_mode_group()
         layout.addWidget(self.capture_mode_group)
-
-        self.record_baseline_btn = QPushButton("RECORD CLEAN BASELINE")
-        self.record_baseline_btn.setObjectName("BaselineButton")
-        self.record_baseline_btn.setFixedHeight(26)
-        self.record_baseline_btn.clicked.connect(self.recordBaselineToggled.emit)
-        layout.addWidget(self.record_baseline_btn)
 
         self.analyze_display_checkbox = QCheckBox("Analyze this display anyway")
         self.analyze_display_checkbox.setToolTip(
@@ -139,22 +122,9 @@ class ControlBar(QWidget):
 
         self.view_buttons: dict[str, QPushButton] = {}
 
-    def _on_profile_changed(self, index: int) -> None:
-        profile = self.profile_combo.itemData(index)
-        if profile:
-            self.sourceProfileChanged.emit(str(profile))
-
     def _on_tools_panel_toggled(self, visible: bool) -> None:
         self.tools_panel_btn.setText("TOOLS" if visible else "TOOLS OFF")
         self.toolsPanelToggled.emit(visible)
-
-    def set_source_profile(self, profile: str) -> None:
-        index = self.profile_combo.findData(profile)
-        if index < 0 or index == self.profile_combo.currentIndex():
-            return
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.setCurrentIndex(index)
-        self.profile_combo.blockSignals(False)
 
     def _build_capture_mode_group(self) -> QFrame:
         group = QFrame(self)
@@ -197,12 +167,6 @@ class ControlBar(QWidget):
         button = self.view_buttons.get(mode_id)
         if button is not None:
             button.setChecked(True)
-
-    def set_recording_baseline(self, active: bool, stream_mode: str = "live") -> None:
-        if stream_mode == "vod":
-            self.record_baseline_btn.setText("STOP MARKING CLEAN" if active else "MARK VOD AS CLEAN")
-        else:
-            self.record_baseline_btn.setText("STOP BASELINE" if active else "RECORD CLEAN BASELINE")
 
     def set_tools_panel_visible(self, visible: bool) -> None:
         if self.tools_panel_btn.isChecked() == visible:

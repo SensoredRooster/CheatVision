@@ -114,10 +114,8 @@ class MainWindow(QMainWindow):
         self.control_bar = ControlBar(self)
         self.control_bar.mountVodRequested.connect(self._on_mount_vod_requested)
         self.control_bar.viewModeChanged.connect(self._on_view_mode_changed)
-        self.control_bar.recordBaselineToggled.connect(self._on_record_baseline_toggled)
         self.control_bar.rescanDevicesRequested.connect(self._on_rescan_devices_requested)
         self.control_bar.captureModeChanged.connect(self._on_capture_mode_changed)
-        self.control_bar.sourceProfileChanged.connect(self._on_source_profile_changed)
         self.control_bar.toolsPanelToggled.connect(self._on_tools_panel_toggled)
         layout.addWidget(self.control_bar, 0)
         self.status_label = self.control_bar.status_label
@@ -127,6 +125,8 @@ class MainWindow(QMainWindow):
 
         self.left_rail = LeftRail(self)
         self.left_rail.analyzeToggled.connect(self._on_analyze_display_toggled)
+        self.left_rail.sourceProfileChanged.connect(self._on_source_profile_changed)
+        self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
         self.body_splitter.addWidget(self.left_rail)
 
@@ -150,7 +150,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.control_bar.set_stream_mode(self._stream_mode)
-        self.control_bar.set_source_profile(str(self.settings.get("source_profile", "hdmi_game")))
+        self.left_rail.set_source_profile(str(self.settings.get("source_profile", "hdmi_game")))
         self._update_signal_card()
 
     # ------------------------------------------------------------------
@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
             self.dataset_exporter.stop_clean_baseline_mode()
         except Exception:
             pass
-        self.control_bar.set_recording_baseline(False, self._stream_mode)
+        self.left_rail.set_recording_baseline(False, self._stream_mode)
         self.control_bar.mount_vod_btn.setEnabled(True)
 
     def _teardown_capture(self) -> None:
@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
         if self._render_worker is not None:
             self._render_worker.set_flagged_track_ids(())
         self._update_detection_enabled()
-        self.control_bar.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "vod")
+        self.left_rail.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "vod")
 
         self.playback_controls.show()
         self.playback_controls.reset_play_state()
@@ -318,13 +318,13 @@ class MainWindow(QMainWindow):
     def _on_record_baseline_toggled(self) -> None:
         if self.dataset_exporter.is_recording_baseline:
             self.dataset_exporter.stop_clean_baseline_mode()
-            self.control_bar.set_recording_baseline(False, self._stream_mode)
+            self.left_rail.set_recording_baseline(False, self._stream_mode)
             self.control_bar.mount_vod_btn.setEnabled(True)
             self.status_label.setText(self._status_text_with_mode())
             self._update_signal_card()
         else:
             output_path = self.dataset_exporter.start_clean_baseline_mode()
-            self.control_bar.set_recording_baseline(True, self._stream_mode)
+            self.left_rail.set_recording_baseline(True, self._stream_mode)
             self.control_bar.mount_vod_btn.setEnabled(False)
             self.status_label.setText(f"SAMPLING BASELINE · {output_path}")
             self._update_signal_card()
@@ -349,7 +349,7 @@ class MainWindow(QMainWindow):
         if self._render_worker is not None:
             self._render_worker.set_flagged_track_ids(())
         self._update_detection_enabled()
-        self.control_bar.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "live")
+        self.left_rail.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "live")
         self._launch_capture(device)
 
     def _on_rescan_devices_requested(self) -> None:
@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
     def _apply_source_profile(self, profile: str) -> None:
         self.settings["source_profile"] = profile
         self.pipeline.set_source_profile(profile)
-        self.control_bar.set_source_profile(profile)
+        self.left_rail.set_source_profile(profile)
         self.status_label.setText(self._status_text_with_mode())
         self._update_signal_card()
 
