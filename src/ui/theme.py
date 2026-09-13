@@ -100,27 +100,27 @@ QPushButton#BaselineButton {{
 }}
 
 QLabel#ModePill {{
-    background-color: {PANEL_ALT};
-    border: 1px solid {ACCENT_DIM};
+    background-color: {PANEL};
+    border: 1px solid {ACCENT};
     border-radius: 4px;
-    padding: 4px 10px;
+    padding: 4px 12px;
     font-size: 11px;
     font-weight: bold;
-    color: {TEXT_MUTED};
+    color: {ACCENT};
     min-height: 0px;
-    max-height: 22px;
+    max-height: 26px;
 }}
 
 QLabel#ModePill[mode="live"] {{
-    background-color: {ACCENT};
+    background-color: {PANEL};
     border: 1px solid {ACCENT};
-    color: {BACKGROUND};
+    color: {ACCENT};
 }}
 
 QLabel#ModePill[mode="vod"] {{
-    background-color: {VOD_ACCENT};
+    background-color: {PANEL};
     border: 1px solid {VOD_ACCENT};
-    color: {BACKGROUND};
+    color: {VOD_ACCENT};
 }}
 
 QSplitter::handle {{
