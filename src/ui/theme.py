@@ -159,12 +159,6 @@ QLabel#RailCardTitle {{
     letter-spacing: 1px;
 }}
 
-QLabel#RailCardBody {{
-    color: {TEXT_PRIMARY};
-    font-size: 12px;
-    font-weight: bold;
-}}
-
 QLabel#RailMetricKey {{
     color: {TEXT_MUTED};
     font-size: 10px;

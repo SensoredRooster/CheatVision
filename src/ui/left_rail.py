@@ -195,9 +195,6 @@ class LeftRail(QWidget):
             "(Streaming Center / OBS) to analyse while that app records."
         )
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
-        self._source_name = QLabel("—")
-        self._source_name.setObjectName("RailCardBody")
-        self._source_name.setWordWrap(True)
         self._source_mode = MetricRow("Mode")
         self._source_feed = MetricRow("Feed")
         self._source_backend = MetricRow("Pipe")
@@ -214,7 +211,6 @@ class LeftRail(QWidget):
         self._ignore_row = MetricRow("Ignore")
         self._baseline_row = MetricRow("Base")
         self.source.add_row(self.device_combo)
-        self.source.add_row(self._source_name)
         self.source.add_row(self._source_mode)
         self.source.add_row(self._source_feed)
         self.source.add_row(self._source_backend)
@@ -311,7 +307,8 @@ class LeftRail(QWidget):
         self.incidents.set_title("Incidents · 0")
 
     def set_source(self, name: str, mode: str, backend: str, *, low_mode: bool = False) -> None:
-        self._source_name.setText(name or "—")
+        # The device name is shown by the dropdown; keep it as a tooltip only.
+        self.device_combo.setToolTip(name or self.device_combo.toolTip())
         if low_mode:
             self._source_mode.set_value("low mode", warn=True)
         else:
