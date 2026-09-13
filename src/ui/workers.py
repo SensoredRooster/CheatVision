@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from typing import Callable
 
 import cv2
 import numpy as np
@@ -48,6 +47,7 @@ class CaptureWorker(QObject):
         self._frame_source: FrameSource | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._frame_condition = threading.Condition(self._lock)
         self._latest_context: FrameContext | None = None
         self._frame_sequence = 0
         self._recent_frame_cache: deque[np.ndarray] = deque(maxlen=1)
@@ -63,6 +63,16 @@ class CaptureWorker(QObject):
     def get_recent_frame_cache(self) -> list[np.ndarray]:
         with self._lock:
             return list(self._recent_frame_cache)
+
+    def wait_for_frame(self, last_frame_id: int, timeout: float = 0.05) -> FrameContext | None:
+        with self._frame_condition:
+            self._frame_condition.wait_for(
+                lambda: (
+                    self._latest_context is not None and self._latest_context.frame_id != last_frame_id
+                ) or self._stop_event.is_set(),
+                timeout=timeout,
+            )
+            return self._latest_context
 
     def estimate_live_fps(self) -> float:
         timestamps = list(self._live_frame_timestamps)
@@ -146,14 +156,16 @@ class CaptureWorker(QObject):
         return width, height, fps
 
     def _publish_latest(self, context: FrameContext) -> None:
-        with self._lock:
+        with self._frame_condition:
             self._latest_context = context
             self._recent_frame_cache.append(context.frame)
+            self._frame_condition.notify_all()
 
     def _clear_latest_frame(self) -> None:
-        with self._lock:
+        with self._frame_condition:
             self._latest_context = None
             self._recent_frame_cache.clear()
+            self._frame_condition.notify_all()
 
     def _maybe_emit_negotiated_from_frame(self, frame: np.ndarray) -> None:
         height, width = frame.shape[:2]
@@ -236,6 +248,8 @@ class CaptureWorker(QObject):
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._frame_condition:
+            self._frame_condition.notify_all()
         self._close_frame_source()
 
 
@@ -251,6 +265,7 @@ class PlaybackWorker(QObject):
         self._video_path = video_path
         self._fps_override = fps_override
         self._lock = threading.Lock()
+        self._frame_condition = threading.Condition(self._lock)
         self._latest_context: FrameContext | None = None
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
@@ -261,6 +276,16 @@ class PlaybackWorker(QObject):
 
     def get_latest_context(self) -> FrameContext | None:
         with self._lock:
+            return self._latest_context
+
+    def wait_for_frame(self, last_frame_id: int, timeout: float = 0.05) -> FrameContext | None:
+        with self._frame_condition:
+            self._frame_condition.wait_for(
+                lambda: (
+                    self._latest_context is not None and self._latest_context.frame_id != last_frame_id
+                ) or self._stop_event.is_set(),
+                timeout=timeout,
+            )
             return self._latest_context
 
     @Slot()
@@ -309,8 +334,9 @@ class PlaybackWorker(QObject):
                 source="video_playback_stream",
                 is_duplicate=False,
             )
-            with self._lock:
+            with self._frame_condition:
                 self._latest_context = context
+                self._frame_condition.notify_all()
 
             elapsed = time.perf_counter() - start_time
             time.sleep(max(0.0, frame_delay - elapsed))
@@ -353,13 +379,16 @@ class PlaybackWorker(QObject):
             source="timeline_seek_review",
             is_duplicate=False,
         )
-        with self._lock:
+        with self._frame_condition:
             self._latest_context = context
+            self._frame_condition.notify_all()
         with self._seek_lock:
             self._seek_target = None
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._frame_condition:
+            self._frame_condition.notify_all()
         capture = self._capture
         self._capture = None
         if capture is not None:
@@ -400,9 +429,8 @@ class AnalysisWorker(QObject):
                 source = self._source
                 capture_worker = self._capture_worker
 
-            ctx = source.get_latest_context()
+            ctx = source.wait_for_frame(self._last_analyzed_frame_id, timeout=0.05)
             if ctx is None or ctx.frame_id == self._last_analyzed_frame_id:
-                time.sleep(0.001)
                 continue
 
             if ctx.analysis_frame is None and self._pipeline.should_analyze_frame(ctx.frame_id):
@@ -460,9 +488,8 @@ class DetectionWorker(QObject):
             with self._source_lock:
                 source = self._source
 
-            ctx = source.get_latest_context()
+            ctx = source.wait_for_frame(self._last_frame_id, timeout=frame_interval)
             if ctx is None or ctx.frame_id == self._last_frame_id:
-                time.sleep(0.001)
                 continue
 
             self._last_frame_id = ctx.frame_id
