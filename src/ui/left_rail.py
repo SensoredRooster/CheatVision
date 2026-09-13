@@ -155,6 +155,7 @@ class LeftRail(QWidget):
     analyzeToggled = Signal(bool)
     sourceProfileChanged = Signal(str)
     recordBaselineToggled = Signal()
+    deviceSelected = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -183,6 +184,17 @@ class LeftRail(QWidget):
         # negotiated mode, real feed rate, pipe, source profile (selectable),
         # and the profile's ignore-rect count / baseline recording state.
         self.source = RailSection("Source")
+        # Device picker: the capture card, or another app's virtual camera so
+        # that app can record/stream the card while CheatVision analyses it.
+        self.device_combo = QComboBox()
+        self.device_combo.setObjectName("SourceCombo")
+        self.device_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.device_combo.setMinimumContentsLength(18)
+        self.device_combo.setToolTip(
+            "Video device. The capture card serves one app at a time; pick a Virtual Camera "
+            "(Streaming Center / OBS) to analyse while that app records."
+        )
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         self._source_name = QLabel("—")
         self._source_name.setObjectName("RailCardBody")
         self._source_name.setWordWrap(True)
@@ -201,6 +213,7 @@ class LeftRail(QWidget):
         self._profile_row = WidgetRow("Profile", self.profile_combo)
         self._ignore_row = MetricRow("Ignore")
         self._baseline_row = MetricRow("Base")
+        self.source.add_row(self.device_combo)
         self.source.add_row(self._source_name)
         self.source.add_row(self._source_mode)
         self.source.add_row(self._source_feed)
@@ -252,6 +265,26 @@ class LeftRail(QWidget):
         profile = self.profile_combo.itemData(index)
         if profile:
             self.sourceProfileChanged.emit(str(profile))
+
+    def _on_device_changed(self, index: int) -> None:
+        name = self.device_combo.itemData(index)
+        if name:
+            self.deviceSelected.emit(str(name))
+
+    def set_devices(self, devices: list[dict], current_name: str) -> None:
+        """Populate the picker; entries carry the DirectShow device name."""
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        for device in devices:
+            name = str(device.get("name", ""))
+            if not name:
+                continue
+            kind = str(device.get("kind", "Input"))
+            self.device_combo.addItem(f"{name}  ·  {kind.upper()}", name)
+        index = self.device_combo.findData(current_name)
+        if index >= 0:
+            self.device_combo.setCurrentIndex(index)
+        self.device_combo.blockSignals(False)
 
     def set_source_profile(self, profile: str) -> None:
         index = self.profile_combo.findData(profile)

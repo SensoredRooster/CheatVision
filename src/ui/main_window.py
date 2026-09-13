@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
         self._feed_starved = False
         self._current_device_name = ""
         self._current_device: dict | None = None
+        self._known_devices: list[dict] = []
 
         self._capture_thread: QThread | None = None
         self._capture_worker: CaptureWorker | None = None
@@ -127,6 +129,7 @@ class MainWindow(QMainWindow):
         self.left_rail.analyzeToggled.connect(self._on_analyze_display_toggled)
         self.left_rail.sourceProfileChanged.connect(self._on_source_profile_changed)
         self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
+        self.left_rail.deviceSelected.connect(self._on_device_selected)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
         self.body_splitter.addWidget(self.left_rail)
 
@@ -158,7 +161,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _auto_start_capture(self) -> None:
         devices = discover_directshow_devices()
-        preferred = pick_preferred_capture_device(devices)
+        preferred = self._choose_startup_device(devices)
+        self._known_devices = devices
+        self.left_rail.set_devices(devices, str(preferred.get("name", "")) if preferred else "")
 
         self._capture_worker, self._capture_thread = self._make_capture_worker(preferred)
 
@@ -354,8 +359,10 @@ class MainWindow(QMainWindow):
 
     def _on_rescan_devices_requested(self) -> None:
         devices = discover_directshow_devices()
-        preferred = pick_preferred_capture_device(devices)
+        self._known_devices = devices
+        preferred = self._choose_startup_device(devices)
         preferred_name = str(preferred.get("name", "")) if preferred else ""
+        self.left_rail.set_devices(devices, preferred_name)
 
         capture_alive = self._capture_thread is not None and self._capture_thread.isRunning()
         if preferred_name == self._current_device_name and capture_alive:
@@ -363,6 +370,38 @@ class MainWindow(QMainWindow):
             return
 
         self._restart_capture(preferred)
+
+    def _choose_startup_device(self, devices: list[dict]) -> dict | None:
+        """The user's saved pick if it is present, else the best available."""
+        wanted = str(self.settings.get("capture_device_name", "") or "").strip().lower()
+        if wanted:
+            for device in devices:
+                if str(device.get("name", "")).strip().lower() == wanted:
+                    return device
+        return pick_preferred_capture_device(devices)
+
+    def _on_device_selected(self, device_name: str) -> None:
+        device = next((d for d in self._known_devices if str(d.get("name", "")) == device_name), None)
+        if device is None:
+            return
+        self.settings["capture_device_name"] = device_name
+        self.settings["capture_device_kind"] = str(device.get("kind", ""))
+        self._persist_setting("capture_device_name", device_name)
+        self._persist_setting("capture_device_kind", str(device.get("kind", "")))
+        if device_name == self._current_device_name and self._capture_thread is not None and self._capture_thread.isRunning():
+            return
+        self.status_label.setText(f"Switching source: {device.get('label', device_name)}")
+        self._restart_capture(device)
+
+    def _persist_setting(self, key: str, value) -> None:
+        """Write one key back to config/settings.json so the choice survives restarts."""
+        try:
+            path = Path(self.settings.get("project_root", str(Path.cwd()))) / "config" / "settings.json"
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            data[key] = value
+            path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        except Exception as exc:
+            print(f"[SETTINGS] [WARN] could not save {key}: {exc}")
 
     def _on_capture_mode_changed(self, width: int, height: int, fps: int) -> None:
         if width > 0 and height > 0 and fps > 0:

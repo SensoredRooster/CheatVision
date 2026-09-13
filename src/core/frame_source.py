@@ -135,6 +135,9 @@ _CALIBRATION_MIN_FPS_RATIO = 0.92
 # produced, so a candidate is judged on steady delivery rather than on hitting
 # the nominal rate: anything at or above this is a healthy live feed.
 _CALIBRATION_MIN_ABSOLUTE_FPS = 50.0
+# A virtual camera whose host app has it switched off opens but never sends a
+# frame; how long to wait for the first one before reporting that.
+_VIRTUAL_CAMERA_FIRST_FRAME_SEC = 4.0
 
 # The ffmpeg(dshow) process + reader-thread/event handoff needs real time
 # after isOpened() to reach steady-state frame delivery -- the first stretch
@@ -430,11 +433,14 @@ def _close_ffmpeg_pipes(process: subprocess.Popen[bytes] | None) -> None:
 
 
 class FFmpegRawVideoCapture:
-    def __init__(self, device_name: str, width: int, height: int, fps: int):
+    def __init__(self, device_name: str, width: int, height: int, fps: int, pixel_format: str | None = None):
         self.device_name = device_name
         self.input_width = max(1, int(width))
         self.input_height = max(1, int(height))
         self.input_fps = max(1, int(fps))
+        # DirectShow input pixel format to request (e.g. "bgr0" for virtual
+        # cameras that only publish that); None lets the driver choose.
+        self.input_pixel_format = pixel_format
         self.width, self.height, self.fps = _preview_geometry(self.input_width, self.input_height, self.input_fps)
         self._frame_size = self.width * self.height * 3
         self._process: subprocess.Popen[bytes] | None = None
@@ -536,13 +542,17 @@ class FFmpegRawVideoCapture:
 
     def _input_args(self) -> list[str]:
         """ffmpeg input section; subclasses may substitute a non-device source."""
-        return [
+        args = [
             "-thread_queue_size",
             "512",
             "-rtbufsize",
             "256M",
             "-f",
             "dshow",
+        ]
+        if self.input_pixel_format:
+            args += ["-pixel_format", self.input_pixel_format]
+        args += [
             "-framerate",
             str(self.input_fps),
             "-video_size",
@@ -550,6 +560,7 @@ class FFmpegRawVideoCapture:
             "-i",
             f"video={self.device_name}",
         ]
+        return args
 
     def _video_filter(self) -> str:
         filters: list[str] = []
@@ -752,10 +763,81 @@ class FrameSource:
                 self.region = {"left": x0, "top": y0, "width": max(1, x1 - x0), "height": max(1, y1 - y0)}
 
     def _is_capture_card_device(self) -> bool:
+        if self._is_virtual_camera_device():
+            return False
         capture_kind = self._capture_kind.lower()
         capture_name = self._capture_device_name.lower()
         keywords = ("capture card", "avermedia", "elgato", "decklink", "live gamer", "hdmi", "capture")
         return any(keyword in capture_kind for keyword in keywords) or any(keyword in capture_name for keyword in keywords)
+
+    def _is_virtual_camera_device(self) -> bool:
+        return "virtual" in self._capture_kind.lower() or infer_device_kind(self._capture_device_name) == "Virtual Camera"
+
+    def _open_virtual_camera(self, device_name: str, requested_width: int, requested_height: int) -> "FFmpegRawVideoCapture | None":
+        """Open another app's virtual-camera output.
+
+        No bandwidth calibration ladder here: it is a software feed at a fixed
+        rate (60 on Streaming Center/OBS), and the modes it lists are exactly
+        what it will serve. Pick the largest advertised size that is not
+        larger than the requested one, in the pixel format it publishes.
+        """
+        output = _run_ffmpeg_query(
+            ["ffmpeg", "-hide_banner", "-list_options", "true", "-f", "dshow", "-i", f"video={device_name}"],
+            timeout=8.0,
+        )
+        pixel_format: str | None = None
+        modes: dict[tuple[int, int], float] = {}
+        for line in output.splitlines():
+            match = _RANGE_MODE_PATTERN.search(line) or _DISCRETE_MODE_PATTERN.search(line)
+            if match is None:
+                continue
+            fmt = match.group(1)
+            if pixel_format is None and not fmt.startswith("0x"):
+                pixel_format = fmt
+            if fmt != pixel_format:
+                continue
+            groups = match.groups()
+            if len(groups) >= 7:
+                w, h, fps = int(groups[4]), int(groups[5]), float(groups[6])
+            else:
+                w, h, fps = int(groups[1]), int(groups[2]), float(groups[3])
+            # Virtual cameras list portrait variants too (1440x2560); keep landscape.
+            if h > w:
+                continue
+            modes[(w, h)] = max(modes.get((w, h), 0.0), fps)
+
+        requested_area = max(1, requested_width * requested_height)
+        candidates = sorted(
+            (m for m in modes if m[0] * m[1] <= requested_area * 1.05), key=lambda m: m[0] * m[1], reverse=True
+        ) or sorted(modes, key=lambda m: m[0] * m[1])
+        if not candidates:
+            candidates = [(requested_width, requested_height)]
+            modes[candidates[0]] = 60.0
+        width, height = candidates[0]
+        fps = int(round(modes.get((width, height), 60.0))) or 60
+
+        try:
+            capture = FFmpegRawVideoCapture(device_name, width, height, fps, pixel_format=pixel_format)
+        except Exception:
+            return None
+        # A virtual camera that is registered but switched off in its host app
+        # opens fine and then never delivers a frame; give it a moment and
+        # report that clearly instead of a generic stall.
+        deadline = time.time() + _VIRTUAL_CAMERA_FIRST_FRAME_SEC
+        while time.time() < deadline and capture.isOpened():
+            ok, _frame = capture.read()
+            if ok:
+                self.settings["capture_width"] = width
+                self.settings["capture_height"] = height
+                self.settings["capture_fps"] = fps
+                print(f"[CAPTURE] [VIRTUAL] {device_name}: {width}x{height}@{fps} {pixel_format or ''}")
+                return capture
+        self.last_open_error = capture.get_last_error() or (
+            f"{device_name} is registered but not sending frames. Turn on the Virtual Camera "
+            "output in its host app (Streaming Center / OBS), then press RESCAN."
+        )
+        capture.release()
+        return None
 
     def _probe_capture_card_mode(
         self, device_name: str, width: int, height: int, fallback_fps: int
@@ -1067,6 +1149,14 @@ class FrameSource:
         return True
 
     def _open_camera_capture(self, camera_index: int) -> cv2.VideoCapture:
+        if self._is_virtual_camera_device() and self._capture_device_name:
+            requested_width = int(self.settings.get("capture_width", 2560) or 2560)
+            requested_height = int(self.settings.get("capture_height", 1440) or 1440)
+            capture = self._open_virtual_camera(self._capture_device_name, requested_width, requested_height)
+            # Never fall through to OpenCV here: it would open the *real* card
+            # by index and starve the host app the user is recording with.
+            return capture
+
         if self._is_capture_card_device() and self._capture_device_name:
             requested_width = int(self.settings.get("capture_width", 2560) or 2560)
             requested_height = int(self.settings.get("capture_height", 1440) or 1440)
@@ -1262,6 +1352,12 @@ class FrameSource:
 
 def infer_device_kind(label: str) -> str:
     lowered = label.lower()
+    # A virtual camera is another app's *output* (Streaming Center / OBS /
+    # Streamlabs re-publishing the capture card). Reading it lets that app
+    # record or stream while CheatVision analyses the same picture -- the
+    # only way around the card's one-client-at-a-time limit. Checked first:
+    # "Streaming Center Virtual Camera" also matches "camera" below.
+    virtual_keywords = ("virtual cam", "virtual camera", "virtualcam", "obs virtual", "streamlabs desktop virtual")
     capture_keywords = (
         "capture card",
         "capture",
@@ -1286,6 +1382,8 @@ def infer_device_kind(label: str) -> str:
         "razer kiyo",
         "integrated",
     )
+    if any(keyword in lowered for keyword in virtual_keywords):
+        return "Virtual Camera"
     if any(keyword in lowered for keyword in capture_keywords):
         return "Capture Card"
     if any(keyword in lowered for keyword in webcam_keywords):

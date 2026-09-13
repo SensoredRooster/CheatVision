@@ -98,6 +98,18 @@ object with *kill-on-close*, so a crash of the app cannot leave one behind.
 card open, opening fails with a clear message, or frames arrive as a trickle —
 the status text in the top bar then warns *CAPTURE CARD DELIVERING ONLY N FPS*.
 
+**Recording and analysing at the same time.** Let the recording app own the
+card and point CheatVision at that app's **virtual camera** instead (SOURCE
+card → device dropdown → e.g. *Streaming Center Virtual Camera*, *OBS Virtual
+Camera*). Virtual cameras are multi-client, so the recorder keeps its feed and
+CheatVision gets the same 2560×1440@60 picture (60 new frames/s is all the card
+produces anyway). The pipe reads `VIRTUAL_CAM`; the choice is saved to
+`settings.json`. A virtual camera whose host has it switched off opens but sends
+nothing — CheatVision reports that after 4 s instead of showing a frozen canvas.
+Virtual cameras skip the bandwidth calibration ladder (fixed-rate software
+feed) and CheatVision never falls back to opening the real card by index while
+one is selected, so it cannot starve the recorder.
+
 Freeze latch: 320×180 nearest-neighbour gray sample, mean absdiff. Frozen only
 after the greater of **90 frames** or **1.5 s** below **1.5**. HUD/smoke/facecam
 motion clears it.
@@ -223,7 +235,7 @@ VOD scrubber appears under the canvas only while a file is mounted.
 | piece | job |
 |---|---|
 | `ControlBar` | Import VOD, Rescan, TOOLS, live status text (mode · profile · warnings, elided with tooltip), optional RES/FPS pins (VOD only) |
-| `LeftRail` | centred brand + **RECORD CLEAN BASELINE**; SOURCE (device, mode, feed rate, pipe, **source profile combo**, ignore-rect count, baseline state); DETECT (YOLO / tracks / gate / ANALYZE LIVE); SIGNAL (STR + TREMOR sparkline); INCIDENTS (flag table with count; double-click seeks a VOD) |
+| `LeftRail` | centred brand + **RECORD CLEAN BASELINE**; SOURCE (**device dropdown** incl. virtual cameras, mode, feed rate, pipe, **source profile combo**, ignore-rect count, baseline state); DETECT (YOLO / tracks / gate / ANALYZE LIVE); SIGNAL (STR + TREMOR sparkline); INCIDENTS (flag table with count; double-click seeks a VOD) |
 | `VideoCanvas` | paints the latest rendered frame; `RenderWorker` builds it off the UI thread and hands it over through a single-slot mailbox (no backlog) |
 | View modes | STANDARD, HEATMAP, FLAGGED |
 

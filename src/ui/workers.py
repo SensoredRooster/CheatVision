@@ -182,7 +182,12 @@ class CaptureWorker(QObject):
         elif getattr(self._frame_source, "mode", "") == "screen":
             backend = "MSS"
         elif isinstance(capture, FFmpegRawVideoCapture):
-            backend = "CAP_FFMPEG"
+            is_virtual = False
+            try:
+                is_virtual = bool(self._frame_source._is_virtual_camera_device())
+            except Exception:
+                is_virtual = False
+            backend = "VIRTUAL_CAM" if is_virtual else "CAP_FFMPEG"
         else:
             backend = "CAP_DSHOW"
         self._backend = backend
