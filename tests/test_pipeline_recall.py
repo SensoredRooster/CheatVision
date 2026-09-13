@@ -108,6 +108,40 @@ class PipelineRecallTest(unittest.TestCase):
         events = _Scenario().run(path, target_path=target)
         self.assertIn("SNAP_TO_TARGET", events)
 
+    def test_human_ramp_onto_head_is_not_flagged(self) -> None:
+        """A hand accelerating onto a target over ~3 frames (as in two real
+        false positives: 0.6 -> 14 -> 37 px) must not read as a snap even
+        though it lands on the head and holds there."""
+        rng = np.random.default_rng(7)
+        target = [(60.0, -30.0)] * 90
+        ramp = [(0.0, 0.0), (0.6, 0.0), (15.0, -7.0), (52.0, -26.0), (60.0, -30.0)]
+        path = []
+        for i in range(90):
+            if i < 30:
+                path.append((rng.normal(0, 0.5), rng.normal(0, 0.5)))
+            elif i - 30 < len(ramp):
+                path.append(ramp[i - 30])
+            else:
+                path.append((60.0 + rng.normal(0, 0.5), -30.0 + rng.normal(0, 0.5)))
+        events = _Scenario().run(path, target_path=target)
+        self.assertNotIn("SNAP_TO_TARGET", events)
+        self.assertNotIn("FLICK_SNAP", events)
+
+    def test_snap_that_does_not_hold_is_not_flagged(self) -> None:
+        """Instant move onto the head, then straight off it: no hold, no flag."""
+        rng = np.random.default_rng(9)
+        target = [(60.0, -30.0)] * 90
+        path = []
+        for i in range(90):
+            if i < 30:
+                path.append((rng.normal(0, 0.5), rng.normal(0, 0.5)))
+            elif i < 33:
+                path.append((60.0, -30.0))
+            else:
+                path.append((60.0 + (i - 32) * 9.0, -30.0 + (i - 32) * 4.0))
+        events = _Scenario().run(path, target_path=target)
+        self.assertNotIn("SNAP_TO_TARGET", events)
+
     def test_head_point_is_inside_the_box(self) -> None:
         head = AntiCheatPipeline._head_point((100, 200, 140, 280))
         self.assertIsNotNone(head)

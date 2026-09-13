@@ -61,6 +61,13 @@ _STREAM_TOP_FRAC = (0.0, 0.0, 1.0, 0.10)
 _STREAM_BOTTOM_FRAC = (0.0, 0.88, 1.0, 1.0)
 _STREAM_CHAT_FRAC = (0.80, 0.10, 1.0, 0.88)
 _BLACK_FRAME_MEAN = 8.0
+# Targeted-snap rules. A scripted snap is instantaneous: the frame before the
+# big step is essentially still. Human flicks ramp up -- measured on live
+# false positives: 0.6 -> 14 -> 37 px and 5 -> 41 -> 46 px -- so the previous
+# step may be at most this fraction of the snap step. After landing, the aim
+# must stay on the head this long before the verdict is reported.
+_SNAP_RAMP_RATIO = 0.15
+_SNAP_HOLD_SECONDS = 0.20
 
 
 def _clamp_frac(rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -567,6 +574,17 @@ class AntiCheatPipeline:
         last_step = float(metrics.get("last_step") or (dx * dx + dy * dy) ** 0.5)
         mean_velocity = float(metrics.get("velocity") or last_step)
         now = float(metrics.get("_timestamp") or 0.0)
+        # A scripted snap goes from still to the target in ONE frame. A human
+        # accelerates into the move over several frames (the two live false
+        # positives ramped 0.6 -> 14 -> 37 px and 5 -> 41 -> 46 px). Measure
+        # how much of the big move happened in the step just before it.
+        path = metrics.get("path") or []
+        instant = True
+        if len(path) >= 3:
+            prev_dx = float(path[-2][0]) - float(path[-3][0])
+            prev_dy = float(path[-2][1]) - float(path[-3][1])
+            prev_step = (prev_dx * prev_dx + prev_dy * prev_dy) ** 0.5
+            instant = prev_step <= max(2.0 * scale, last_step * _SNAP_RAMP_RATIO)
 
         heads: dict[Any, tuple[float, float]] = {}
         snap: dict[str, Any] | None = None
@@ -582,7 +600,7 @@ class AntiCheatPipeline:
             hx, hy = head
             err = float((hx - rx) ** 2 + (hy - ry) ** 2) ** 0.5
             previous = self._prev_heads.get(track_id)
-            if last_step >= snap_min and err <= land_px:
+            if instant and last_step >= snap_min and err <= land_px:
                 aligned = True
                 if previous is not None:
                     needed_x = previous[0] - rx
@@ -621,33 +639,43 @@ class AntiCheatPipeline:
 
         self._prev_heads = heads
 
-        # A snap is a one-frame event but the verdict must survive the
-        # persistence gate: latch it while the reticle stays on that head.
-        if snap is not None:
-            self._snap_latch = {"track_id": snap["track_id"], "confidence": snap["confidence"], "since": now}
-            return snap
+        # A snap is a one-frame event, so it is *latched* and only reported
+        # once the aim has stayed on that head for _SNAP_HOLD_SECONDS: an
+        # assist lands and holds, a whipped human aim overshoots or drifts
+        # off within a few frames. Losing the head clears the latch silently.
+        if snap is not None and (self._snap_latch is None or self._snap_latch["track_id"] != snap["track_id"]):
+            self._snap_latch = {"track_id": snap["track_id"], "confidence": snap["confidence"], "since": now, "kind": "SNAP_TO_TARGET"}
         latch = self._snap_latch
         if latch is not None:
             head = heads.get(latch["track_id"])
             still_on = head is not None and float((head[0] - rx) ** 2 + (head[1] - ry) ** 2) ** 0.5 <= land_px
-            if still_on and (now - latch["since"]) <= self._snap_latch_seconds:
-                return {"event_type": "SNAP_TO_TARGET", "confidence": latch["confidence"], "track_id": latch["track_id"]}
-            self._snap_latch = None
+            if not still_on:
+                self._snap_latch = None
+            else:
+                held_for = now - latch["since"]
+                if held_for >= _SNAP_HOLD_SECONDS:
+                    if held_for > _SNAP_HOLD_SECONDS + self._snap_latch_seconds:
+                        self._snap_latch = None
+                    return {"event_type": latch["kind"], "confidence": latch["confidence"], "track_id": latch["track_id"]}
+                return None
         if sticky is not None:
             return sticky
-        # Free flick without a player track is mostly mouse-turn noise on legit VODs.
-        if heads and last_step >= flick_px and last_step >= max(mean_velocity, 1.0) * 1.8:
+        # Free flick onto the nearest tracked head. Same instant-move test as a
+        # snap: a human flick ramps up over several frames, a scripted one does
+        # not. Also latched and held before it is reported.
+        if instant and heads and last_step >= flick_px and last_step >= max(mean_velocity, 1.0) * 1.8:
             nearest_id = min(
                 heads,
                 key=lambda tid: (heads[tid][0] - rx) ** 2 + (heads[tid][1] - ry) ** 2,
             )
             hx, hy = heads[nearest_id]
             err = float((hx - rx) ** 2 + (hy - ry) ** 2) ** 0.5
-            if err <= land_px * 1.35:
-                return {
-                    "event_type": "FLICK_SNAP",
-                    "confidence": min(1.0, last_step / (flick_px * 1.6)),
+            if err <= land_px * 1.35 and self._snap_latch is None:
+                self._snap_latch = {
                     "track_id": nearest_id,
+                    "confidence": min(1.0, last_step / (flick_px * 1.6)),
+                    "since": now,
+                    "kind": "FLICK_SNAP",
                 }
         return None
 

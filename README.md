@@ -473,9 +473,9 @@ Replica-aim with YOLO boxes (detections inside the profile's
 
 | event | idea |
 |---|---|
-| `SNAP_TO_TARGET` | step ≥ 12 px landing ≤ 34 px from a head, moving toward where the head was; latched 0.35 s while aim stays on it |
+| `SNAP_TO_TARGET` | an **instant** step ≥ 12 px (the frame before it ≤ 15 % of the step — humans ramp up, measured 0.6→14→37 px on a live false positive) landing ≤ 34 px from a head, moving toward where the head was, and then **held on that head ≥ 0.20 s** before it is reported (an assist lands and stays; a whipped hand overshoots or drifts) |
 | `STICKY_AIM` | reticle ≤ 22 px from a head while the *camera* moves, ≥ 6 hits (a perfect lock keeps the head still on screen) |
-| `FLICK_SNAP` | one step ≫ mean velocity landing near the nearest head |
+| `FLICK_SNAP` | one instant step ≥ 26 px and ≫ mean velocity landing near the nearest head; same ramp test and hold requirement as a snap |
 
 Kinematic flags without a replica event still need a YOLO box under the reticle
 when the detector is ready. A verdict must persist 0.05 s (target-corroborated)
