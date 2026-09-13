@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Dataset notes + helpers for PixelVision.
+"""Dataset notes + helpers for CheatVision.
 
 The old "AntiCheatPT" GitHub link in early drafts does not host gameplay video.
 The AntiCheatPT paper's public CS2CD data is tick/demo tables (Parquet/JSON),
-which PixelVision cannot score — this console needs pixels (capture / VOD).
+which CheatVision cannot score — this console needs pixels (capture / VOD).
 
 What to use instead:
   1) Synthetic smoke eval (kinematics only):
@@ -29,7 +29,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="PixelVision dataset helper (no broken AntiCheatPT download)")
+    ap = argparse.ArgumentParser(description="CheatVision dataset helper (no broken AntiCheatPT download)")
     ap.add_argument("--out", default="data/eval_synthetic", help="Unused; kept for old scripts")
     args = ap.parse_args()
     print(__doc__)

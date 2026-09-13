@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a local YOLOv8/v11 ONNX player detector for PixelVision.
+"""Export a local YOLOv8/v11 ONNX player detector for CheatVision.
 
 Weights stay gitignored under data/models/.
 
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Export YOLO ONNX for PixelVision")
+    ap = argparse.ArgumentParser(description="Export YOLO ONNX for CheatVision")
     ap.add_argument("--model", default="yolov8n.pt", help="Ultralytics model name or path")
     ap.add_argument("--out", default="data/models/yolov8n.onnx", help="Destination ONNX path")
     ap.add_argument("--imgsz", type=int, default=640)
@@ -47,7 +47,7 @@ def main() -> int:
         shutil.move(str(exported), str(out))
 
     print(f"Wrote {out} ({out.stat().st_size} bytes)")
-    print("PixelVision settings default: player_detector_model_path = data/models/yolov8n.onnx")
+    print("CheatVision settings default: player_detector_model_path = data/models/yolov8n.onnx")
     return 0
 
 

@@ -74,7 +74,7 @@ class AntiCheatModelTrainer:
                 print(f" -> Epoch {epoch + 1}/{epochs} | Aggregated Loss: {epoch_loss / len(dataloader):.4f}")
 
         model.eval()
-        onnx_path = os.path.join(self.model_dir, "pixelvision_detector.onnx")
+        onnx_path = os.path.join(self.model_dir, "cheatvision_detector.onnx")
         dummy_input = torch.randn(1, X_data.shape[1]).to(self.device)
 
         torch.onnx.export(

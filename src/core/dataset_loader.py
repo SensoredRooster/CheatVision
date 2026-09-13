@@ -123,7 +123,7 @@ if __name__ == "__main__":
     os.makedirs("data/clean", exist_ok=True)
     os.makedirs("data/suspicious", exist_ok=True)
 
-    print("[SYSTEM] Starting PixelVision Dataset Compiler Layer...")
+    print("[SYSTEM] Starting CheatVision Dataset Compiler Layer...")
     loader = AntiCheatMLDatasetLoader()
     x, y = loader.compile_training_tensors()
 

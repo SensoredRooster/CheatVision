@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate synthetic clean vs mechanical-aim clips for PixelVision eval.
+"""Generate synthetic clean vs mechanical-aim clips for CheatVision eval.
 
 These are not a substitute for real Warzone VODs, but they give an immediate
 precision/recall smoke test for the kinematics path (same patterns as
@@ -98,7 +98,7 @@ def _suspicious_snap_clip(seed: int, frames: int, height: int, width: int) -> li
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Make synthetic PixelVision eval clips")
+    ap = argparse.ArgumentParser(description="Make synthetic CheatVision eval clips")
     ap.add_argument("--out", default="data/eval_synthetic")
     ap.add_argument("--width", type=int, default=960)
     ap.add_argument("--height", type=int, default=540)

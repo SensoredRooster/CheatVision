@@ -113,7 +113,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: dict):
         super().__init__()
         self.settings = settings
-        self.setWindowTitle(str(settings.get("window_title", "PixelVision")))
+        self.setWindowTitle(str(settings.get("window_title", "CheatVision")))
         self.resize(1600, 950)
         self.setStyleSheet(APP_STYLESHEET)
 

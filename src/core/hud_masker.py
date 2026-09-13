@@ -282,6 +282,6 @@ if __name__ == "__main__":
     dummy_gameplay = np.ones((1440, 2560, 3), dtype=np.uint8) * 255
     output = masker.apply_mask(dummy_gameplay)
     print("[SYSTEM] HUD mask built for profile:", masker.profile_id)
-    cv2.imshow("PixelVision HUD Mask Layout Validation", output)
+    cv2.imshow("CheatVision HUD Mask Layout Validation", output)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

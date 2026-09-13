@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import labeled clips into PixelVision clean/suspicious folders and optionally evaluate.
+"""Import labeled clips into CheatVision clean/suspicious folders and optionally evaluate.
 
 Usage:
     python tools/import_dataset.py --input data/eval_synthetic/clips --labels data/eval_synthetic/labels.csv --output data --analyze --report data/eval_synthetic/eval_report.json
@@ -27,13 +27,13 @@ VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm"}
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Import labeled dataset into PixelVision")
+    ap = argparse.ArgumentParser(description="Import labeled dataset into CheatVision")
     ap.add_argument("--input", required=True, help="Folder of video clips")
     ap.add_argument("--labels", required=True, help="CSV with filename,label columns")
     ap.add_argument("--output", default="data", help="Output root (default: data)")
     ap.add_argument("--width", type=int, default=960, help="Analysis width")
     ap.add_argument("--height", type=int, default=540, help="Analysis height")
-    ap.add_argument("--analyze", action="store_true", help="Run PixelVision on each clip")
+    ap.add_argument("--analyze", action="store_true", help="Run CheatVision on each clip")
     ap.add_argument("--report", default="", help="Optional JSON eval report path")
     ap.add_argument("--max-frames", type=int, default=0, help="Cap frames per clip (0 = all)")
     ap.add_argument("--copy", action="store_true", default=True, help="Copy clips into clean/suspicious")

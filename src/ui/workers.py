@@ -282,7 +282,10 @@ class PlaybackWorker(QObject):
 
     @Slot()
     def start(self) -> None:
-        cap = cv2.VideoCapture(self._video_path)
+        cap = cv2.VideoCapture(self._video_path, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(self._video_path)
         if not cap.isOpened():
             self.playbackError.emit(f"Failed to open {self._video_path}")
             return
@@ -290,19 +293,30 @@ class PlaybackWorker(QObject):
         self._capture = cap
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        fps = self._fps_override if self._fps_override > 0 else float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+        reported = self._fps_override if self._fps_override > 0 else float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        fps = reported if 12.0 <= reported <= 120.0 else 30.0
         self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         self.sourceOpened.emit(width, height, fps, self.total_frames)
 
-        frame_delay = 1.0 / max(fps, 1.0)
+        frame_delay = 1.0 / fps
         finished_naturally = False
+        waiting_on_ui = False
 
         while not self._stop_event.is_set():
+            if waiting_on_ui:
+                with self._lock:
+                    pending = self._frame_signal_pending
+                if pending:
+                    time.sleep(0.001)
+                    continue
+                waiting_on_ui = False
+
             with self._seek_lock:
                 seek_target = self._seek_target
                 self._seek_target = None
             if seek_target is not None:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, seek_target - 1))
+                waiting_on_ui = False
 
             if self._pause_event.is_set():
                 time.sleep(0.03)
@@ -324,11 +338,9 @@ class PlaybackWorker(QObject):
             )
             with self._lock:
                 self._latest_context = context
-                emit_now = not self._frame_signal_pending
-                if emit_now:
-                    self._frame_signal_pending = True
-            if emit_now:
-                self.frameAvailable.emit(frame_id)
+                self._frame_signal_pending = True
+            self.frameAvailable.emit(frame_id)
+            waiting_on_ui = True
 
             elapsed = time.perf_counter() - start_time
             time.sleep(max(0.0, frame_delay - elapsed))

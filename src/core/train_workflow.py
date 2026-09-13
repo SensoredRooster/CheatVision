@@ -54,7 +54,7 @@ class PixelVisionTrainingWorkflow:
         suspicious_clips = [clip for clip in suspicious_clips if clip.lower().endswith(valid_extensions)]
 
         print("\n=====================================================================")
-        print("                  PIXELVISION REAL-DATASET INVENTORY                 ")
+        print("                  CHEATVISION REAL-DATASET INVENTORY                 ")
         print("=====================================================================")
         print(f" -> Found [ {len(clean_clips)} ] Real Verified Clean Gameplay Videos.")
         print(f" -> Found [ {len(suspicious_clips)} ] Real Verified Suspicious Clips.")
@@ -125,7 +125,7 @@ class PixelVisionValidationWorkflow:
 
     def validate_and_compile_metrics(self) -> dict[str, Any]:
         print("\n=====================================================================")
-        print("                PIXELVISION MATRIX DISCRIMINATION TUNER              ")
+        print("                CHEATVISION MATRIX DISCRIMINATION TUNER              ")
         print("=====================================================================")
 
         true_positives = 0
@@ -197,7 +197,7 @@ class PixelVisionValidationWorkflow:
         }
 
         print("\n=====================================================================")
-        print("                  PIXELVISION ENGINE PERFORMANCE REPORT              ")
+        print("                  CHEATVISION ENGINE PERFORMANCE REPORT              ")
         print("=====================================================================")
         print(f" -> Current Confidence Filter Boundary : {self.conf_min * 100:.1f}%")
         print(f" -> Friend-or-Foe Squad Mask Status    : {'ACTIVE' if self.squad_filter_enabled else 'DISABLED'}")
