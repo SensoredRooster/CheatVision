@@ -338,7 +338,7 @@ class FFmpegRawVideoCapture:
 
             if len(raw) != self._frame_size:
                 break
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
             sample = _freeze_sample(frame)
             with self._lock:
                 previous_sample = self._freeze_sample

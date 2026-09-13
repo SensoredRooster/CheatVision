@@ -11,16 +11,16 @@ from src.ui.theme import ACCENT, CANVAS_IDLE_COLOR
 class VideoCanvas(QWidget):
     """Letterboxed frame display.
 
-    Holds a reference to the full FrameContext (not just the derived QImage)
+    Holds references to both the full FrameContext and the rendered numpy frame
     because QImage(Format_BGR888) wraps the backing numpy buffer without
-    copying it - dropping the array reference early would let it be freed
-    or mutated mid-paint.
+    copying it.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._ctx: FrameContext | None = None
+        self._frame_buffer = None
         self._image: QImage | None = None
         self._idle_text = "No capture device detected — Mount a gameplay recording to begin"
 
@@ -29,13 +29,16 @@ class VideoCanvas(QWidget):
         if self._image is None:
             self.update()
 
-    def set_frame(self, ctx: FrameContext, qimage: QImage) -> None:
+    def set_frame(self, ctx: FrameContext, frame) -> None:
         self._ctx = ctx
-        self._image = qimage
+        self._frame_buffer = frame
+        height, width = frame.shape[:2]
+        self._image = QImage(frame.data, width, height, frame.strides[0], QImage.Format_BGR888)
         self.update()
 
     def clear_frame(self) -> None:
         self._ctx = None
+        self._frame_buffer = None
         self._image = None
         self.update()
 

@@ -20,7 +20,7 @@ class PixelVisionLiveOverlay:
         tracked_entities: list[dict[str, Any]],
         flagged_id: Optional[int] = None,
     ) -> np.ndarray:
-        overlay_canvas = frame.copy()
+        overlay_canvas = frame
 
         for entity in tracked_entities:
             track_id = entity.get("track_id")

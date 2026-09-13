@@ -5,11 +5,8 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-import cv2
-import numpy as np
-
-from PySide6.QtCore import Qt, QThread, QTimer, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QImage, QPainter
+from PySide6.QtCore import Qt, QThread, Slot
+from PySide6.QtGui import QCloseEvent, QColor, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -32,50 +29,11 @@ from src.ui.left_rail import LeftRail
 from src.ui.playback_controls import PlaybackControlsBar
 from src.ui.theme import APP_STYLESHEET, PANEL, TEXT_MUTED, WARNING
 from src.ui.video_canvas import VideoCanvas
-from src.ui.workers import AnalysisWorker, CaptureWorker, DetectionWorker, PlaybackWorker
+from src.ui.workers import AnalysisWorker, CaptureWorker, DetectionWorker, PlaybackWorker, RenderWorker
 
 # Cap on retained flagged-track markers so a continuous LIVE session can't grow
 # this without bound. Oldest flagged track is forgotten first (FIFO).
 _MAX_FLAGGED_TRACK_IDS = 500
-_GATE_CHIP_FONT = cv2.FONT_HERSHEY_SIMPLEX
-_GATE_CHIP_FONT_SCALE = 0.45
-_GATE_CHIP_THICKNESS = 1
-_GATE_CHIP_PAD = 6
-_GATE_CHIP_TEXT_COLOR = (90, 220, 120)
-_GATE_CHIP_BG_COLOR = (10, 16, 12)
-
-
-def _with_gate_chip(frame: np.ndarray, reason: str) -> np.ndarray:
-    if frame.size == 0:
-        return frame.copy()
-    canvas = frame.copy()
-    text = f"GATE:{reason}"
-    (text_w, text_h), baseline = cv2.getTextSize(
-        text,
-        _GATE_CHIP_FONT,
-        _GATE_CHIP_FONT_SCALE,
-        _GATE_CHIP_THICKNESS,
-    )
-    height, width = canvas.shape[:2]
-    x1 = min(_GATE_CHIP_PAD, max(0, width - 1))
-    y1 = min(_GATE_CHIP_PAD, max(0, height - 1))
-    x2 = min(width - 1, max(x1, x1 + text_w + _GATE_CHIP_PAD * 2))
-    y2 = min(height - 1, max(y1, y1 + text_h + baseline + _GATE_CHIP_PAD * 2))
-    cv2.rectangle(canvas, (x1, y1), (x2, y2), _GATE_CHIP_BG_COLOR, -1)
-    cv2.rectangle(canvas, (x1, y1), (x2, y2), (35, 55, 40), 1)
-    text_x = min(max(x1 + _GATE_CHIP_PAD, 0), max(0, width - 1))
-    text_y = min(max(y1 + _GATE_CHIP_PAD + text_h, 0), max(0, height - 1))
-    cv2.putText(
-        canvas,
-        text,
-        (text_x, text_y),
-        _GATE_CHIP_FONT,
-        _GATE_CHIP_FONT_SCALE,
-        _GATE_CHIP_TEXT_COLOR,
-        _GATE_CHIP_THICKNESS,
-        cv2.LINE_AA,
-    )
-    return canvas
 
 
 class VerticalLabel(QWidget):
@@ -148,16 +106,13 @@ class MainWindow(QMainWindow):
 
         self._view_mode = "standard"
         self._stream_mode = "live"
-        self._last_rendered_frame_id = -1
-        self._last_rendered_gate_live = None
-        self._last_rendered_gate_reason = None
-        self._last_paint_time = 0.0
         self._last_signal_paint_time = 0.0
         self._latest_telemetry: dict = {}
-        self._pending_flagged_event: CheatEvent | None = None
         self._event_count = 0
         self._flagged_track_ids: OrderedDict[int, None] = OrderedDict()
         self._analyze_display_anyway = False
+        self._tools_panel_visible = True
+        self._tools_panel_width = 268
         self._is_stream_frozen = False
         self._current_device_name = ""
         self._current_device: dict | None = None
@@ -170,6 +125,8 @@ class MainWindow(QMainWindow):
         self._analysis_worker: AnalysisWorker | None = None
         self._detection_thread: QThread | None = None
         self._detection_worker: DetectionWorker | None = None
+        self._render_thread: QThread | None = None
+        self._render_worker: RenderWorker | None = None
 
         self._build_ui()
         self._auto_start_capture()
@@ -190,6 +147,7 @@ class MainWindow(QMainWindow):
         self.control_bar.rescanDevicesRequested.connect(self._on_rescan_devices_requested)
         self.control_bar.captureModeChanged.connect(self._on_capture_mode_changed)
         self.control_bar.sourceProfileChanged.connect(self._on_source_profile_changed)
+        self.control_bar.toolsPanelToggled.connect(self._on_tools_panel_toggled)
         layout.addWidget(self.control_bar, 0)
 
         self.body_splitter = QSplitter(Qt.Horizontal, self)
@@ -201,11 +159,6 @@ class MainWindow(QMainWindow):
 
         self.video_canvas = VideoCanvas(self)
         self.body_splitter.addWidget(self.video_canvas)
-        self._display_timer = QTimer(self)
-        self._display_timer.setTimerType(Qt.PreciseTimer)
-        self._display_timer.setInterval(16)
-        self._display_timer.timeout.connect(self._on_display_tick)
-        self._display_timer.start()
 
         self.incidents_drawer = QWidget(self)
         self.incidents_drawer.setObjectName("IncidentsDrawer")
@@ -226,7 +179,7 @@ class MainWindow(QMainWindow):
 
         self.body_splitter.addWidget(self.incidents_drawer)
 
-        self.body_splitter.setCollapsible(0, False)
+        self.body_splitter.setCollapsible(0, True)
         self.body_splitter.setCollapsible(1, False)
         self.body_splitter.setCollapsible(2, True)
         self.body_splitter.setStretchFactor(0, 0)
@@ -272,6 +225,7 @@ class MainWindow(QMainWindow):
         self._analysis_worker.moveToThread(self._analysis_thread)
         self._analysis_worker.cheatEventDetected.connect(self._on_cheat_event_detected)
         self._analysis_worker.telemetryUpdated.connect(self._on_telemetry_updated)
+        self._analysis_thread.started.connect(self._analysis_worker.start)
         self._analysis_thread.start()
 
         detection_fps = int(self.settings.get("detection_fps", 30))
@@ -281,6 +235,21 @@ class MainWindow(QMainWindow):
         self._detection_thread.started.connect(self._detection_worker.start)
         self._detection_thread.start()
         self._update_detection_enabled()
+
+        self._render_worker = RenderWorker(
+            self.pipeline,
+            self.live_overlay,
+            self.advanced_overlay,
+            self._capture_worker,
+        )
+        self._render_thread = QThread(self)
+        self._render_worker.moveToThread(self._render_thread)
+        self._render_worker.frameReady.connect(self._on_rendered_frame)
+        self._render_thread.started.connect(self._render_worker.start)
+        self._render_worker.set_view_mode(self._view_mode)
+        self._render_worker.set_flagged_track_ids(())
+        self._render_worker.set_target_size(self.video_canvas.width(), self.video_canvas.height())
+        self._render_thread.start()
 
         self._wire_capture_worker()
         self._launch_capture(preferred)
@@ -303,12 +272,9 @@ class MainWindow(QMainWindow):
         self._capture_worker.captureError.connect(self._on_capture_error)
         self._capture_worker.streamFrozen.connect(self._on_capture_stream_frozen)
         self._capture_worker.waitingForDevice.connect(self._on_waiting_for_capture)
-        self._capture_worker.frameAvailable.connect(self._on_live_frame_available)
-        self._capture_worker.frameAvailable.connect(self._analysis_worker.on_frame_available)
         self._capture_thread.started.connect(self._capture_worker.start)
 
     def _launch_capture(self, device: dict | None) -> None:
-        self._last_rendered_frame_id = -1
         browser = str(self.settings.get("source_profile", "hdmi_game")) == "stream_window"
         if browser:
             self.video_canvas.set_idle_text("Waiting for browser window...")
@@ -340,7 +306,6 @@ class MainWindow(QMainWindow):
         self._capture_worker = None
         self._capture_thread = None
         self.video_canvas.clear_frame()
-        self._last_rendered_frame_id = -1
 
     def _teardown_playback(self) -> None:
         if self._playback_worker is not None:
@@ -368,8 +333,6 @@ class MainWindow(QMainWindow):
         self._playback_thread = QThread(self)
         self._playback_worker.moveToThread(self._playback_thread)
         self._playback_worker.sourceOpened.connect(self._on_playback_source_opened)
-        self._playback_worker.frameAvailable.connect(self._on_playback_frame_available)
-        self._playback_worker.frameAvailable.connect(self._analysis_worker.on_frame_available)
         self._playback_worker.playbackFinished.connect(self._on_playback_finished)
         self._playback_worker.playbackError.connect(self._on_playback_error)
         self._playback_thread.started.connect(self._playback_worker.start)
@@ -377,7 +340,8 @@ class MainWindow(QMainWindow):
         self._analysis_worker.set_source(self._playback_worker)
         self.pipeline.reset_stream_state()
         self._detection_worker.set_source(self._playback_worker)
-        self._last_rendered_frame_id = -1
+        if self._render_worker is not None:
+            self._render_worker.set_source(self._playback_worker)
         self._stream_mode = "vod"
         self._is_stream_frozen = False
         self.pipeline.set_stream_frozen(False)
@@ -388,6 +352,8 @@ class MainWindow(QMainWindow):
 
         self._mounted_vod_name = Path(path).name
         self._flagged_track_ids = OrderedDict()
+        if self._render_worker is not None:
+            self._render_worker.set_flagged_track_ids(())
         self._update_detection_enabled()
         self.control_bar.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "vod")
 
@@ -399,6 +365,8 @@ class MainWindow(QMainWindow):
 
     def _on_view_mode_changed(self, mode: str) -> None:
         self._view_mode = mode
+        if self._render_worker is not None:
+            self._render_worker.set_view_mode(mode)
         self.status_label.setText(self._status_text_with_mode())
 
     def _on_record_baseline_toggled(self) -> None:
@@ -424,12 +392,16 @@ class MainWindow(QMainWindow):
         self.pipeline.reset_stream_state()
         self._analysis_worker.set_source(self._capture_worker)
         self._detection_worker.set_source(self._capture_worker)
+        if self._render_worker is not None:
+            self._render_worker.set_source(self._capture_worker)
         self._stream_mode = "live"
         self._is_stream_frozen = False
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
         self._update_signal_card()
         self._flagged_track_ids = OrderedDict()
+        if self._render_worker is not None:
+            self._render_worker.set_flagged_track_ids(())
         self._update_detection_enabled()
         self.control_bar.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "live")
         self._launch_capture(device)
@@ -478,6 +450,31 @@ class MainWindow(QMainWindow):
         self._analyze_display_anyway = checked
         self._update_detection_enabled()
         self._update_signal_card()
+
+    def _on_tools_panel_toggled(self, visible: bool) -> None:
+        self._tools_panel_visible = bool(visible)
+        if self.left_rail is None:
+            return
+        if visible:
+            self.left_rail.show()
+            self.left_rail.setMinimumWidth(self._tools_panel_width)
+            self.left_rail.setMaximumWidth(self._tools_panel_width)
+        else:
+            self._tools_panel_width = max(268, self.left_rail.width(), self._tools_panel_width)
+            self.left_rail.setMinimumWidth(0)
+            self.left_rail.setMaximumWidth(16777215)
+            self.left_rail.hide()
+        sizes = self.body_splitter.sizes()
+        if len(sizes) != 3:
+            return
+        right_width = max(28, sizes[2])
+        total = max(sum(sizes), self.width())
+        if visible:
+            center_width = max(320, total - self._tools_panel_width - right_width)
+            self.body_splitter.setSizes([self._tools_panel_width, center_width, right_width])
+        else:
+            center_width = max(320, total - right_width)
+            self.body_splitter.setSizes([0, center_width, right_width])
 
     def _apply_source_profile(self, profile: str) -> None:
         self.settings["source_profile"] = profile
@@ -552,7 +549,6 @@ class MainWindow(QMainWindow):
         self.video_canvas.clear_frame()
         self.status_label.setText(f"CAPTURE ERROR: {message}")
         self.video_canvas.set_idle_text(f"Capture error: {message}")
-        self._last_rendered_frame_id = -1
 
     @Slot(bool)
     def _on_capture_stream_frozen(self, is_frozen: bool) -> None:
@@ -573,19 +569,6 @@ class MainWindow(QMainWindow):
         self.video_canvas.clear_frame()
         self.video_canvas.set_idle_text("Waiting for capture device")
         self.status_label.setText("Waiting for capture device")
-        self._last_rendered_frame_id = -1
-
-    @Slot()
-    def _on_display_tick(self) -> None:
-        if self._stream_mode == "vod":
-            self._render_frame(self._playback_worker, -1)
-        else:
-            self._render_frame(self._capture_worker, -1)
-
-    @Slot(int)
-    def _on_live_frame_available(self, frame_id: int) -> None:
-        if self._capture_worker is not None:
-            self._capture_worker.ack_frame_signal()
 
     @Slot(int, int, float, int)
     def _on_playback_source_opened(self, width: int, height: int, fps: float, total_frames: int) -> None:
@@ -602,13 +585,6 @@ class MainWindow(QMainWindow):
         )
         self._update_signal_card()
 
-    @Slot(int)
-    def _on_playback_frame_available(self, frame_id: int) -> None:
-        if self._playback_worker is not None:
-            self._playback_worker.ack_frame_signal()
-        ctx = self._playback_worker.get_latest_context() if self._playback_worker is not None else None
-        self.playback_controls.set_current_frame(ctx.frame_id if ctx is not None else frame_id)
-
     @Slot()
     def _on_playback_finished(self) -> None:
         filename = getattr(self, "_mounted_vod_name", "VOD")
@@ -623,7 +599,6 @@ class MainWindow(QMainWindow):
         self._event_count += 1
         self.event_count_label.setText(f"EVENTS: {self._event_count}")
         self.incident_queue_table.add_event(event)
-        self._pending_flagged_event = event
 
         associated_track_id = event.telemetry_data.get("associated_track_id")
         if associated_track_id is not None:
@@ -631,6 +606,10 @@ class MainWindow(QMainWindow):
             self._flagged_track_ids.move_to_end(associated_track_id)
             if len(self._flagged_track_ids) > _MAX_FLAGGED_TRACK_IDS:
                 self._flagged_track_ids.popitem(last=False)
+            if self._render_worker is not None:
+                self._render_worker.set_flagged_track_ids(self._flagged_track_ids.keys())
+        if self._render_worker is not None:
+            self._render_worker.push_flagged_event(event)
 
         if self._event_count == 1:
             self.incident_collapse_label.hide()
@@ -694,81 +673,24 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
-    def _render_frame(self, source: CaptureWorker | PlaybackWorker | None, frame_id: int) -> None:
-        if source is None:
+    @Slot(object)
+    def _on_rendered_frame(self, payload: dict) -> None:
+        ctx = payload.get("context")
+        display_frame = payload.get("frame")
+        render_error = payload.get("render_error")
+        if ctx is None or display_frame is None:
             return
-
-        now = time.monotonic()
-        if now - self._last_paint_time < (1.0 / 60.0):
-            return
-
-        ctx = source.get_latest_context()
-        if ctx is None:
-            return
-        gate_reason = self.pipeline.gate_reason()
-        is_gate_live = self.pipeline.is_gate_live()
-        if (
-            ctx.frame_id == self._last_rendered_frame_id
-            and is_gate_live == self._last_rendered_gate_live
-            and gate_reason == self._last_rendered_gate_reason
-        ):
-            return
-        self._last_paint_time = now
-        self._last_rendered_frame_id = ctx.frame_id
-        self._last_rendered_gate_live = is_gate_live
-        self._last_rendered_gate_reason = gate_reason
-
-        flagged_event = self._pending_flagged_event
-        self._pending_flagged_event = None
-        is_flagged = flagged_event is not None
-
-        display_frame = self.pipeline.get_display_frame(ctx.frame)
-        render_error: str | None = None
+        if self._stream_mode == "vod":
+            self.playback_controls.set_current_frame(ctx.frame_id)
         try:
-            if is_gate_live:
-                entities = self.pipeline.get_tracked_entities()
-                needs_overlay = is_flagged or bool(entities) or self._view_mode != "standard"
-                if needs_overlay:
-                    display_frame = self.advanced_overlay.compile_display_frame(
-                        display_frame,
-                        entities,
-                        flagged_event,
-                        mode=self._view_mode,
-                        flagged_track_ids=self._flagged_track_ids,
-                    )
-                    flagged_id = flagged_event.telemetry_data.get("associated_track_id") if flagged_event else None
-                    if entities:
-                        display_frame = self.live_overlay.render_overlays(display_frame, entities, flagged_id=flagged_id)
-        except Exception as exc:
-            display_frame = self.pipeline.get_display_frame(ctx.frame)
-            render_error = repr(exc)
-
-        try:
-            target_w = max(320, self.video_canvas.width())
-            target_h = max(180, self.video_canvas.height())
-            source_h, source_w = display_frame.shape[:2]
-            if source_w > target_w or source_h > target_h:
-                scale = min(target_w / source_w, target_h / source_h, 1.0)
-                display_frame = cv2.resize(
-                    display_frame,
-                    (max(1, int(source_w * scale)), max(1, int(source_h * scale))),
-                    interpolation=cv2.INTER_AREA,
-                )
-            if not is_gate_live:
-                display_frame = _with_gate_chip(display_frame, gate_reason)
-            if not display_frame.flags["C_CONTIGUOUS"]:
-                display_frame = display_frame.copy()
-            height, width = display_frame.shape[:2]
-            qimage = QImage(display_frame.data, width, height, display_frame.strides[0], QImage.Format_BGR888).copy()
-            self.video_canvas.set_frame(ctx, qimage)
+            self.video_canvas.set_frame(ctx, display_frame)
         except Exception as exc:
             render_error = f"canvas update failed: {exc!r}"
-
         base_text = self._current_base_status_text()
         mode_text = self._status_text_with_mode()
 
         if render_error is not None:
-            self.status_label.setText(f"{base_text} -- ⚠ render error (frame {frame_id}): {render_error}")
+            self.status_label.setText(f"{base_text} -- ⚠ render error (frame {ctx.frame_id}): {render_error}")
         elif (
             self._stream_mode == "live"
             and self.status_label.text() != mode_text
@@ -780,7 +702,11 @@ class MainWindow(QMainWindow):
     # Shutdown
     # ------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._display_timer.stop()
+        if self._render_worker is not None:
+            self._render_worker.stop()
+        if self._render_thread is not None:
+            self._render_thread.quit()
+            self._render_thread.wait(2000)
         self._stop_baseline_safe()
         self._teardown_capture()
         self._teardown_playback()
@@ -790,7 +716,14 @@ class MainWindow(QMainWindow):
             self._detection_thread.quit()
             self._detection_thread.wait(2000)
         if self._analysis_thread is not None:
+            if self._analysis_worker is not None:
+                self._analysis_worker.stop()
             self._analysis_thread.quit()
             self._analysis_thread.wait(2000)
         self.event_logger.log("Application closed")
         super().closeEvent(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        if self._render_worker is not None:
+            self._render_worker.set_target_size(self.video_canvas.width(), self.video_canvas.height())
+        super().resizeEvent(event)
