@@ -63,6 +63,15 @@ QPushButton#MountButton {{
     background-color: {SURFACE};
 }}
 
+/* The three buttons over the tool rail share its 268px: tight padding so all
+   three labels fit at equal width, matching the RECORD CLEAN BASELINE button. */
+QPushButton#MountButton, QPushButton#RailButton {{
+    padding: 3px 4px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    min-width: 0px;
+}}
+
 QFrame#ControlGroup {{
     background-color: {PANEL_ALT};
     border: 1px solid {ACCENT_DIM};

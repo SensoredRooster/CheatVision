@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.left_rail import RAIL_SIDE_MARGIN, RAIL_WIDTH
+
 
 class StatusLabel(QLabel):
     """Single-line status text that takes whatever width the bar has left and
@@ -83,32 +85,49 @@ class ControlBar(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 12, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 12, 0)
+        layout.setSpacing(0)
+
+        # The three buttons live in a block exactly as wide as the tool rail
+        # below them, with the rail's own side margins, so they line up with
+        # its cards and split its width evenly.
+        self.rail_block = QWidget(self)
+        self.rail_block.setFixedWidth(RAIL_WIDTH)
+        rail_layout = QHBoxLayout(self.rail_block)
+        rail_layout.setContentsMargins(RAIL_SIDE_MARGIN, 0, RAIL_SIDE_MARGIN, 0)
+        rail_layout.setSpacing(6)
 
         self.mount_vod_btn = QPushButton("IMPORT")
         self.mount_vod_btn.setObjectName("MountButton")
         self.mount_vod_btn.setToolTip("Import a gameplay VOD for review.")
         self.mount_vod_btn.clicked.connect(self.mountVodRequested.emit)
-        layout.addWidget(self.mount_vod_btn)
 
         self.rescan_btn = QPushButton("RESCAN")
+        self.rescan_btn.setToolTip("Re-list video devices and reconnect.")
         self.rescan_btn.clicked.connect(self.rescanDevicesRequested.emit)
-        layout.addWidget(self.rescan_btn)
 
         self.tools_panel_btn = QPushButton("TOOLS")
         self.tools_panel_btn.setCheckable(True)
         self.tools_panel_btn.setChecked(True)
         self.tools_panel_btn.setToolTip("Show or hide the left tools panel.")
         self.tools_panel_btn.toggled.connect(self._on_tools_panel_toggled)
-        layout.addWidget(self.tools_panel_btn)
+
+        for button in (self.mount_vod_btn, self.rescan_btn, self.tools_panel_btn):
+            button.setObjectName(button.objectName() or "RailButton")
+            button.setFixedHeight(26)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            rail_layout.addWidget(button, 1)
+        layout.addWidget(self.rail_block, 0)
 
         # Live status (mode, profile, warnings) lives here instead of a bottom
-        # status bar, so the video reaches the window edge. Source profile and
-        # baseline recording moved into the tool rail's SOURCE card.
+        # status bar, so the video reaches the window edge. It starts where the
+        # video does, with the same inset the rail's cards use.
         self.status_label = StatusLabel("Initializing...")
         self.status_label.setObjectName("StatusLabel")
+        layout.addSpacing(RAIL_SIDE_MARGIN)
         layout.addWidget(self.status_label, 1)
+        layout.addSpacing(8)
 
         self.capture_mode_group = self._build_capture_mode_group()
         layout.addWidget(self.capture_mode_group)

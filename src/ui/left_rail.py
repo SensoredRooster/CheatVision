@@ -19,6 +19,10 @@ from PySide6.QtWidgets import (
 from src.ui.incident_queue import IncidentQueueTable
 from src.ui.theme import ACCENT, ACCENT_DIM, ALERT, HAIRLINE, TEXT_MUTED, VOD_ACCENT, WARNING
 
+# Shared with the control bar so its buttons sit exactly over the rail's cards.
+RAIL_WIDTH = 268
+RAIL_SIDE_MARGIN = 12
+
 
 class AimGraph(QWidget):
     def __init__(self, parent=None):
@@ -160,11 +164,11 @@ class LeftRail(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("LeftRail")
-        self.setMinimumWidth(268)
-        self.setMaximumWidth(268)
+        self.setMinimumWidth(RAIL_WIDTH)
+        self.setMaximumWidth(RAIL_WIDTH)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 14, 12, 12)
+        root.setContentsMargins(RAIL_SIDE_MARGIN, 10, RAIL_SIDE_MARGIN, 12)
         root.setSpacing(10)
 
         brand = QLabel("CHEATVISION")
