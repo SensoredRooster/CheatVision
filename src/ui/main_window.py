@@ -571,8 +571,6 @@ class MainWindow(QMainWindow):
         self._event_count += 1
         self.event_count_label.setText(f"EVENTS: {self._event_count}")
         self.incident_queue_table.add_event(event)
-        if self._render_worker is not None:
-            self._render_worker.push_flagged_event(event)
 
         associated_track_id = event.telemetry_data.get("associated_track_id")
         if associated_track_id is not None:
@@ -582,6 +580,8 @@ class MainWindow(QMainWindow):
                 self._flagged_track_ids.popitem(last=False)
             if self._render_worker is not None:
                 self._render_worker.set_flagged_track_ids(self._flagged_track_ids.keys())
+        if self._render_worker is not None:
+            self._render_worker.push_flagged_event(event)
 
         if self._event_count == 1:
             self.incident_collapse_label.hide()
