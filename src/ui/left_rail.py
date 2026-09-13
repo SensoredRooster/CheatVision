@@ -143,7 +143,7 @@ class LeftRail(QWidget):
         root.setContentsMargins(12, 14, 12, 12)
         root.setSpacing(10)
 
-        brand = QLabel("PIXELVISION")
+        brand = QLabel("CHEATVISION")
         brand.setObjectName("RailBrand")
         tag = QLabel("review console")
         tag.setObjectName("RailTag")
