@@ -1,1 +1,1 @@
-"""PixelVision package."""
+"""CheatVision package."""
