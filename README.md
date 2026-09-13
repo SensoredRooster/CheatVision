@@ -1,23 +1,365 @@
-# CheatVision
+# CheatVision — How-To Guide
 
-Windows **spectator / VOD review console** for FPS gameplay. It watches a capture
-card, webcam, monitor, or mounted clip and flags aim that looks mechanical:
-perfectly straight camera pans, high-speed locks with no tremor, snaps onto
-player heads, and sticky tracking.
+CheatVision is a Windows program that **watches FPS gameplay and flags aim that
+looks like a machine did it**: perfectly straight camera pans, high-speed locks
+with no hand tremor, instant snaps onto player heads, and "sticky" tracking.
 
-It does **not** inject into a game. It only looks at pixels.
+It only looks at pixels. It never touches, reads, or injects into the game.
+
+You can feed it:
+
+- a **capture card** (HDMI from the gaming PC or console),
+- another app's **virtual camera** (so you can record with Streaming Center/OBS at the same time),
+- a **saved video file** (VOD review),
+- a **browser window** showing a Twitch/Kick/YouTube stream.
 
 Repo: https://github.com/SensoredRooster/CheatVision
 
-Entry: `python main.py` (`src/app.py` loads `config/settings.json` and opens
-`MainWindow`). Window title and left-rail brand are **CheatVision**.
+---
+
+## 0. What you need
+
+| item | notes |
+|---|---|
+| Windows 10/11 PC | the app is Windows-only (DirectShow capture) |
+| Python 3.11 or newer | https://www.python.org/downloads/ — tick **"Add python.exe to PATH"** during install |
+| ffmpeg | https://www.gyan.dev/ffmpeg/builds/ (or `winget install ffmpeg`). Must be on PATH: open a terminal and type `ffmpeg -version` — if it prints a version, you're good |
+| a video source | capture card (tested: AVerMedia Live Gamer 4K / GC573), or a video file |
+| optional: NVIDIA/Intel/AMD GPU | makes baseline recording free (hardware encoder). Works without |
 
 ---
 
+## 1. Install (one time)
+
+Open **PowerShell** in the folder you downloaded/cloned the repo into, then:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+`torch` at the bottom of `requirements.txt` is **only** for retraining a
+classifier — if that line fails or takes forever, delete it; the app does not
+need it to run.
+
+### Optional: player detector (YOLO)
+
+Without it, CheatVision still scores aim motion. With it, flags can be
+**confirmed against a player box** (much stronger evidence, fewer false alarms).
+
+```powershell
+pip install ultralytics
+python tools/export_player_model.py
+```
+
+That writes `data/models/yolov8n.onnx`. Done once.
+
+---
+
+## 2. Start the app
+
+```powershell
+.\.venv\Scripts\Activate.ps1      # only if you opened a new terminal
+python main.py
+```
+
+What happens on start (takes ~5 s):
+
+1. It lists your DirectShow video devices and picks the capture card (or your
+   last chosen device).
+2. It asks the card for its supported modes and **tests the requested mode for
+   real** (`[CAPTURE] [CALIBRATE] 2560x1440@144: 70.6 fps -> ok` in the console).
+3. The picture appears. The top bar reads e.g.
+   `LIVE · 2560×1440 @ 144 · CAP_FFMPEG · HDMI GAME · STANDARD`.
+
+If the canvas says **Waiting for capture device** — no signal is reaching the
+card. Check the HDMI cable and that the gaming PC/console is outputting.
+
+---
+
+## 3. The screen, top to bottom
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ IMPORT  RESCAN  TOOLS   LIVE · 2560×1440 @ 144 · … · STANDARD    │  ← control bar
+├────────────────┬─────────────────────────────────────────────────┤
+│  CHEATVISION   │                                                 │
+│ [RECORD CLEAN  │                                                 │
+│   BASELINE]    │                                                 │
+│ ┌ SOURCE ────┐ │                                                 │
+│ │ device ▾   │ │                                                 │
+│ │ MODE FEED  │ │              live video                         │
+│ │ PIPE       │ │       (fills to the window edge)                │
+│ │ PROFILE ▾  │ │                                                 │
+│ │ IGNORE BASE│ │                                                 │
+│ ├ DETECT ────┤ │                                                 │
+│ ├ SIGNAL ────┤ │                                                 │
+│ ├ INCIDENTS ─┤ │                                                 │
+│ └────────────┘ │                                                 │
+└────────────────┴─────────────────────────────────────────────────┘
+```
+
+### Control bar
+
+| button | does |
+|---|---|
+| **IMPORT** | open a video file (`.mp4 .mkv .avi`) for review. Stops live capture. |
+| **RESCAN** | re-list devices and reconnect. Use after plugging in a card or closing another capture app. |
+| **TOOLS** | hide/show the left panel (video gets wider). Detection keeps running either way. |
+| status text | what's connected and how. Turns **amber** with a warning when something is wrong (see §8). |
+| RES / FPS boxes | only appear on VOD; pin a playback size/rate if a file is mis-labelled. |
+
+### SOURCE card
+
+| row | meaning |
+|---|---|
+| device dropdown | which video device to read. Capture card, or a **Virtual Camera** (see §5). Remembered across restarts. |
+| device name | the DirectShow name as Windows reports it |
+| **MODE** | resolution and rate **requested** from the device, e.g. `2560×1440 @ 144` |
+| **FEED** | what the device is **really delivering**: `71 fps (60 new)` = 71 frames/s handed over, 60 of them new pictures. This is the honest number — see §7. Turns red if starved. |
+| **PIPE** | how frames get in: `CAP_FFMPEG` (card), `VIRTUAL_CAM`, `GDI_BROWSER`, `MSS` (screen), `VOD` |
+| **PROFILE** | `HDMI GAME` / `STREAM WINDOW` / `VOD FILE` — tells the analyser which screen regions to ignore (see §6) |
+| IGNORE | how many ignore rectangles the profile is applying |
+| BASE | `idle` or `rec` while a baseline is recording |
+
+### DETECT card
+
+| row | meaning |
+|---|---|
+| YOLO | `ON`/`OFF`. On automatically for VODs; off for live HDMI unless you tick **ANALYZE LIVE** |
+| TRACKS | player boxes currently tracked |
+| GATE | `live` = analysing. Anything else (`black`, `no_hud`, `letterbox`, `frozen`) = the analyser is deliberately idle (menus, loading screens, no signal). Normal. |
+| **ANALYZE LIVE** | run the YOLO player detector on the live feed too (costs ~4 CPU cores; makes flags target-confirmed) |
+
+### SIGNAL card
+
+| row | meaning |
+|---|---|
+| LIVE AIM / FREEZE | FREEZE = the picture has not changed for 1.5 s (paused, alt-tabbed, no signal) |
+| **STR** | straightness of the recent aim path, 0–1. Humans wobble: mostly 0.3–0.9. Turns amber ≥ 0.92 |
+| **TREMOR** | hand jitter. Humans while moving fast: never below ~0.5 in testing. Turns red ≤ 0.05 with STR ≥ 0.90 — that is the mechanical signature |
+| graph | STR (line) and TREMOR (fill) over the last ~12 s |
+
+### INCIDENTS card
+
+Every flag lands here: time, class, confidence, track id. The count is in the
+title. Nothing else in the app shows flags twice.
+
+**Double-click a row to see the proof.** Every flag gets its own folder under
+`data/incidents/`, and double-clicking opens it in Explorer with the snapshot
+selected:
+
+| file | what it is |
+|---|---|
+| `snapshot.png` | the flagged frame with the aim path drawn on it (yellow line ending at the red reticle) and the numbers in the corner |
+| `clip.mp4` | ~1.5 s before the flag to ~1 s after, at analysis size (960×540) |
+| `event.json` | everything the detector measured: class, confidence, velocity, straightness, tremor, target track, the raw path |
+
+The folder is created the instant the flag fires; the clip finishes writing
+about a second later (it needs the "after" frames). If a VOD is mounted, the
+double-click also jumps the video to that frame.
+
+---
+
+## 4. Review a saved video (the easiest way to start)
+
+1. Click **IMPORT**, pick an `.mp4`.
+2. The profile switches to `VOD FILE` and YOLO turns on.
+3. Playback controls appear under the video: ⏸/▶ and a scrub bar.
+4. Watch INCIDENTS fill in. Double-click any row to jump there.
+5. Judge each flag yourself — CheatVision *points at* suspicious motion; it does
+   not convict.
+
+Streamlabs / OBS recordings work directly. If a file plays at the wrong speed,
+its frame-rate tag is wrong: pin the real rate in the **FPS** box (top right)
+or set `playback_fps` in `config/settings.json`.
+
+---
+
+## 5. Record with Streaming Center / OBS **and** run CheatVision at the same time
+
+A capture card only lets **one program** read it. Two programs opening the card
+= one of them gets a trickle of frames (CheatVision will show a slideshow and
+the amber warning *CAPTURE CARD DELIVERING ONLY N FPS*).
+
+The fix is built in:
+
+1. In Streaming Center (or OBS), select the card as the source and turn on its
+   **Virtual Camera** output. Record/stream as usual.
+2. In CheatVision, SOURCE → device dropdown → **Streaming Center Virtual Camera**
+   (or *OBS Virtual Camera*).
+3. PIPE shows `VIRTUAL_CAM`, FEED shows `60 fps`. Both apps now run together.
+
+The virtual camera is 2560×1440 at 60 — and 60 new pictures a second is all the
+card produces anyway (§7), so nothing is lost. The choice is saved; next launch
+CheatVision goes straight to it.
+
+If you pick a virtual camera and its host app has the output switched **off**,
+CheatVision says so after 4 s instead of showing a frozen picture.
+
+---
+
+## 6. Profiles — telling the analyser what to ignore
+
+**PROFILE** (SOURCE card) chooses which parts of the screen are *not* gameplay:
+
+| profile | pick it when | ignores |
+|---|---|---|
+| `HDMI GAME` | capture card straight from the game | facecam corner (bottom-right by default), player's own weapon |
+| `STREAM WINDOW` | watching a Twitch/Kick/YouTube stream in a browser | top and bottom stream chrome, chat column on the right, facecam |
+| `VOD FILE` | a recorded stream with overlays baked in | same as STREAM WINDOW |
+
+Changing the profile while live restarts capture (a couple of seconds).
+
+The **game profile** (`config/settings.json` → `game_profile`: `warzone` or
+`generic`) sets where the HUD is (minimap, ammo) so it is masked out, and where
+the player's own gun is drawn so YOLO never mistakes it for an enemy. Add a new
+game by copying `config/game_profiles/warzone.json` and editing the fractions.
+
+---
+
+## 7. Reading the numbers honestly (144 Hz, 60 fps, and all that)
+
+- **MODE** is what was *requested* and accepted (`2560×1440 @ 144`).
+- **FEED** is what *arrives*. On the GC573 at 1440p the driver hands over ~70
+  frames/s no matter what you request, and the HDMI signal itself carries **60
+  new pictures per second** — so FEED reads `71 fps (60 new)`. That is not a
+  bug in CheatVision; it is the card. Duplicated frames are detected and thrown
+  away so the analyser only ever sees new pictures.
+- Want more than 60 new pictures? That is decided on the **gaming PC**: the
+  refresh rate Windows assigns to the capture-card "monitor". A 360 Hz main
+  monitor cloned with the card forces a common rate.
+- The card's own maximum at 1440p is 144 (advertised) / ~70 (delivered). It
+  will do 240 at 1080p.
+
+---
+
+## 8. Warnings you may see, and what to do
+
+| text | meaning | fix |
+|---|---|---|
+| `Capture card is in use by another application…` | OBS/Streamlabs/RECentral/a browser tab owns the card | close it and press **RESCAN**, or use the virtual camera (§5) |
+| `CAPTURE CARD DELIVERING ONLY N FPS` (amber) | another app grabbed the card mid-session | same as above |
+| `NO PIXEL CHANGE DETECTED` / SIGNAL **FREEZE** | picture identical for 1.5 s | pause menu, alt-tab, or no signal. Clears by itself when motion returns |
+| `Waiting for capture device` | device opened but sends nothing | check HDMI cable / source power |
+| `… is registered but not sending frames` | virtual camera picked but its host app's output is off | turn on Virtual Camera in Streaming Center/OBS, press **RESCAN** |
+| `⚠ manual … not supported, auto-calibrated instead` | you pinned a RES/FPS the device can't do | pick AUTO |
+| card refuses to open with *nothing* else running | an earlier ffmpeg got killed mid-stream and wedged the driver (older builds did this) | reboot once. Current builds stop ffmpeg gracefully and can't cause it |
+
+The console window (where you ran `python main.py`) prints the same events with
+more detail, e.g. `[CAPTURE] [CALIBRATE] …`, `[EXPORT] baseline saved …`.
+
+---
+
+## 9. Recording a clean baseline
+
+**RECORD CLEAN BASELINE** (left panel, under the brand) saves the live feed to
+`data/clean/baseline_session_<time>.mp4`. Press again to stop. Use it to build a
+library of gameplay you *know* is legit — that is what the thresholds are tuned
+against, and what a classifier would train on.
+
+- Encoded on the GPU (`h264_nvenc` → `h264_qsv` → `h264_amf`, falling back to
+  `libx264`). Zero dropped frames at 1440p in testing; ~90 MB of memory.
+- Only new pictures are written and the file is stamped with the real rate, so
+  it plays at true speed.
+- Stopping is instant; the file is finalised in the background. Closing the app
+  waits up to 10 s for that.
+- On a VOD the same button reads **MARK VOD AS CLEAN**.
+
+Every flag also gets its own proof folder under `data/incidents/` automatically
+(snapshot, clip, JSON) — see the INCIDENTS card in §3.
+
+---
+
+## 10. Where things are saved
+
+| what | where |
+|---|---|
+| **proof for each flag** (snapshot.png, clip.mp4, event.json) | `data/incidents/<date-time>_<class>_fr<frame>/` |
+| flag events (one JSON line each, all sessions) | `logs/session_<time>.jsonl` |
+| plain-text app log | `logs/events.log` |
+| baseline recordings | `data/clean/` |
+| your device / profile choices | `config/settings.json` (written by the app) |
+| YOLO weights | `data/models/yolov8n.onnx` |
+
+`data/clean`, `data/suspicious`, `data/incidents`, `logs` and the weights are
+**not** committed to git.
+
+---
+
+## 11. Settings file (`config/settings.json`)
+
+You rarely need to touch this — the app writes the important ones. For reference:
+
+| key | meaning |
+|---|---|
+| `capture_device_name` / `capture_device_kind` | device chosen in the SOURCE dropdown (saved automatically) |
+| `capture_mode` | `camera` (devices) or `screen` (a monitor region) |
+| `source_profile` | `hdmi_game` / `stream_window` / `vod_file` |
+| `game_profile` | `warzone` (default) or `generic` |
+| `capture_width` / `capture_height` / `capture_fps` | mode to request; the app verifies it and falls back if the device can't do it |
+| `playback_fps` | force a VOD's rate; `0` = trust the file (accepted range 12–480, else 30) |
+| `player_detector_model_path` | ONNX weights, default `data/models/yolov8n.onnx` |
+| `detection_fps` | how often YOLO runs (default 30) |
+| `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds |
+| `detection_player_class_ids` | `[0]` = COCO "person" |
+| `facecam_roi` | `[]` = default bottom-right box; or `[x0, y0, x1, y1]` as fractions or pixels |
+| `stream_chat_ignore` | ignore the right-hand chat column on stream/VOD profiles |
+| `screen_monitor_index` / `screen_region` | only for `capture_mode: "screen"` |
+| `window_title` | `CheatVision` |
+
+---
+
+## 12. Testing that everything works
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+27 tests: scene gate, aim tracker, coordinate scaling, game profiles, and
+full-pipeline recall (a human flick must **not** flag; a ruler-straight pan, a
+tremor-free lock on a curving target, and a one-frame snap onto a head **must**).
+
+To score the detector on your own footage:
+
+```powershell
+python tools/import_dataset.py --input <folder of clips> --labels <labels.csv> --output data --analyze --report report.json
+```
+
+`labels.csv` has `filename,label,cheat_type,notes` with `label` = `clean` or
+`suspicious` (see `data/labels_template.csv`). The report lists true/false
+positives per clip. On the author's legit 1440p144 Warzone highlights the
+current rules produce **0 false positives**; recall on real cheats still needs
+labelled cheat footage — if you have some, this is the tool to run it through.
+
+The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
+**synthetic test fixtures** from `tools/make_synthetic_eval.py` (noise texture
++ fake HUD + a dot), not real captures.
+
+---
+
+## 13. Everyday checklist
+
+1. Plug in / power the source. Start Streaming Center **before** CheatVision if you want to record.
+2. `python main.py`.
+3. SOURCE → pick the card, or the Virtual Camera if you're recording.
+4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows ~60 new.
+5. Play. Watch INCIDENTS. Double-check anything flagged by eye.
+6. Optional: RECORD CLEAN BASELINE during matches you know are legit.
+7. Close the window normally (it shuts the capture down cleanly).
+
+---
+---
+
+# Technical reference
+
+Everything below is for people changing the code.
+
 ## Architecture
 
-Five Qt worker threads plus the UI thread. Nobody queues a backlog of live
-frames: each stage keeps **one latest** `FrameContext` and drops the rest.
+Five worker threads plus the UI thread. No stage queues a backlog of live
+frames: each keeps **one latest** `FrameContext` and drops the rest.
 
 ```
 DirectShow / ffmpeg / MSS / VOD file
@@ -35,299 +377,155 @@ DirectShow / ffmpeg / MSS / VOD file
                                              writes boxes back onto the pipeline
 ```
 
-- **CaptureWorker** — owns `FrameSource`. Tight read loop; frames the driver
-  merely repeated are dropped here so nothing downstream works on duplicates.
-  Reports the measured feed rate (delivered / new pictures) once a second and
-  warns when the card is being starved by another client.
-- **PlaybackWorker** — mounted VOD. Opens with `cv2.CAP_FFMPEG` first. Clamps
-  reported FPS to **12–480** (else **30**) because OpenCV often reports `0` or
-  `1000` on Streamlabs MP4s. Paces frames on an absolute schedule so timer
-  granularity cannot accumulate into drift and catch-up bursts.
-- **AnalysisWorker** — calls `AntiCheatPipeline.process_frame`. Emits telemetry
-  and `CheatEvent`s.
-- **DetectionWorker** — optional YOLO (ONNX Runtime capped at 4 intra-op
-  threads). Off for live HDMI unless **ANALYZE LIVE**. Always on for VOD. Idles
-  when disabled instead of waking per frame.
-- **RenderWorker** — builds the display frame off the UI thread; the UI thread
-  only blits.
+The preview is independent of detection: hiding the canvas changes nothing
+about what gets flagged.
+
+- **CaptureWorker** — owns `FrameSource`. Drops frames the driver merely
+  repeated; reports feed rate (delivered / new) once a second and flags
+  starvation by another client.
+- **PlaybackWorker** — VOD. `cv2.CAP_FFMPEG` first. Clamps reported FPS to
+  12–480 (else 30). Absolute-schedule pacing (no drift/catch-up bursts).
+- **AnalysisWorker** — `AntiCheatPipeline.process_frame`; telemetry throttled.
+- **DetectionWorker** — YOLO via ONNX Runtime (4 intra-op threads). Idles when
+  disabled.
+- **RenderWorker** — builds the display frame off the UI thread; the UI blits.
 - **MainWindow** — composition root; never blocks on capture or analysis.
 
-`FrameContext` carries `frame` (display BGR), optional `analysis_frame`,
-`timestamp`, `frame_id`, `source`.
+## Capture (`src/core/frame_source.py`)
 
----
+Capture cards go through **ffmpeg dshow**, not OpenCV's camera API.
 
-## Capture (HDMI / GC573)
+1. `ffmpeg -list_options` → parse bgr24 modes.
+2. Ladder: **requested mode first**, then the requested resolution's other
+   rates, then sizes nearest to the request (never up to 4K when 1440p was
+   asked), sub-720 last. 144.0 and 144.001 are the same mode and probed once.
+3. Each candidate streams for ~2.5 s after a 1 s warm-up; pass = no `too full`
+   overflow, device not busy, frames arriving steadily (≥ 92 % of target or
+   ≥ 50 fps). **The passing probe is kept as the live capture** — closing it and
+   re-opening a moment later was a race that starved the real capture.
+4. Height < 720 is never AUTO success while an HD mode exists (`[LOW MODE]`).
 
-`src/core/frame_source.py`
+`FFmpegRawVideoCapture`: `-fps_mode passthrough` (CFR output was padding to the
+requested rate with duplicates), raw BGR24 into a **64 MB kernel pipe** read
+with unbuffered `readinto` straight into the frame array (the 32 KB pipe +
+`BufferedReader` maxed out ~83 fps and made ffmpeg drop frames). Requests a
+pixel format only for virtual cameras.
 
-Capture cards go through **ffmpeg dshow**, not OpenCV’s camera API.
+**Shutdown:** ffmpeg gets `q` on stdin and is waited for before anything else;
+hard kill is the fallback. Killing a streaming dshow graph wedges the AVerMedia
+driver (unkillable zombie owning the card until reboot). All ffmpeg children
+sit in a Windows job object with kill-on-close.
 
-1. `ffmpeg -list_options` on the device, parse **bgr24** modes.
-2. AUTO ladder tries the **requested mode first** (default 2560×1440@144), then
-   the requested resolution at its other advertised rates, then other
-   height ≥ 720, then sub-720 last.
-3. Each candidate is probed for ~2.5s after a 1s warmup. Pass if no
-   `too full` overflow, the device is not busy, and frames arrive steadily
-   (≥ 92% of target or ≥ 50 fps). **The passing probe is kept as the live
-   capture** — closing it and re-opening the same mode a moment later was a
-   race that turned the real capture into a starved second client.
-4. Height **< 720 is not AUTO success** if any HD mode exists. The SOURCE
-   card shows a yellow **low mode** chip; the log line is `[LOW MODE]` not
-   `[SUCCESS]`.
-5. Preview geometry will not squash an HD source below 720p (the old 1280-wide
-   cap turned 2560×1080 into 1280×540).
+**Virtual cameras** (`infer_device_kind` → "Virtual Camera"): open in the
+published pixel format, largest landscape mode ≤ requested, fixed rate, no
+ladder; never fall back to opening the real card by index.
 
-`FFmpegRawVideoCapture` runs ffmpeg with `-fps_mode passthrough` into a raw
-BGR24 pipe (64 MB kernel buffer, unbuffered `readinto` straight into the frame
-array — the default 32 KB pipe plus Python's `BufferedReader` could not keep up
-with 1440p144 and made ffmpeg drop frames). Passthrough matters: constant-frame-
-rate output pads the stream with repeated frames to reach the requested rate;
-the GC573 driver itself yields ~70 frames/s at 2560×1440 whatever is requested,
-so the old output was half duplicates. Frames the driver repeats are flagged and
-skipped by `CaptureWorker`; the left-rail **FEED** row shows `delivered (new)` fps.
+Freeze latch: 320×180 nearest-neighbour gray, mean absdiff; frozen after the
+greater of 90 frames or 1.5 s below 1.5.
 
-`release()` sends ffmpeg `q` on stdin and waits for it to exit before anything
-else; a hard kill is only the fallback. Killing ffmpeg while the graph streams
-can hang the AVerMedia driver's close path: the process becomes an unkillable
-zombie that still owns the device and every later open fails with *"device
-already in use"* until a reboot. All ffmpeg children also sit in a Windows job
-object with *kill-on-close*, so a crash of the app cannot leave one behind.
+Measured on this hardware: 2560×1440 bgr24 at 144 fps (~1.59 GB/s) sustains
+with zero drops; PCIe Gen2 ×4 is not the limit; the driver's delivery cap at
+1440p is ~70.6 fps and the HDMI content is 60 Hz.
 
-**One client per card.** If OBS / Streamlabs / RECentral / a browser tab has the
-card open, opening fails with a clear message, or frames arrive as a trickle —
-the status text in the top bar then warns *CAPTURE CARD DELIVERING ONLY N FPS*.
+## Scene gate (`src/core/scene_gate.py`)
 
-**Recording and analysing at the same time.** Let the recording app own the
-card and point CheatVision at that app's **virtual camera** instead (SOURCE
-card → device dropdown → e.g. *Streaming Center Virtual Camera*, *OBS Virtual
-Camera*). Virtual cameras are multi-client, so the recorder keeps its feed and
-CheatVision gets the same 2560×1440@60 picture (60 new frames/s is all the card
-produces anyway). The pipe reads `VIRTUAL_CAM`; the choice is saved to
-`settings.json`. A virtual camera whose host has it switched off opens but sends
-nothing — CheatVision reports that after 4 s instead of showing a frozen canvas.
-Virtual cameras skip the bandwidth calibration ladder (fixed-rate software
-feed) and CheatVision never falls back to opening the real card by index while
-one is selected, so it cannot starve the recorder.
-
-Freeze latch: 320×180 nearest-neighbour gray sample, mean absdiff. Frozen only
-after the greater of **90 frames** or **1.5 s** below **1.5**. HUD/smoke/facecam
-motion clears it.
-
----
-
-## Scene gate
-
-`src/core/scene_gate.py` + `AntiCheatPipeline.process_frame`
-
-Raw skip reasons (from the analysis frame):
+Raw skip reasons from the analysis frame:
 
 | reason | meaning |
 |---|---|
 | `live` | HUD energy present, not black, not letterbox, not frozen |
 | `black` | mean luma on a 32×18 shrink < 8 |
-| `letterbox` | cinematic bars in the content frac |
-| `no_hud` | no minimap/ammo/stance energy (`hud_masker.hud_energy_present`) |
+| `letterbox` | cinematic bars in the content region |
+| `no_hud` | no minimap/ammo/stance energy |
 | `frozen` | capture freeze latch |
 
-Published state is only **Live** or **Held** (N = 20 frames):
+Published state is **Live** or **Held** with N = 20 frames of hysteresis each
+way. While Held: no overlays, `GATE:<reason>` chip, analyser and head trackers
+reset, STR/TREMOR = 0. A short raw skip while still Live only idles telemetry.
+The canvas always shows the live picture (never a held frame).
 
-- Leave Live after 20 consecutive non-live raw frames (black and no_hud count
-  together; the chip text is the **latest** raw reason).
-- Re-enter Live after 20 consecutive raw-live frames.
-- Five-frame black burst stays Live. Five-frame live flicker does not leave Held.
+## Aim scoring (`src/core/anomaly_detector.py`, `anti_cheat_pipeline.py`)
 
-When **Held**:
-
-- Canvas paints `scene_gate.display_frame(current)` = last Live BGR frame, never
-  a black fill. The last Live buffer is copied once on the Live→Held edge so a
-  reused capture buffer cannot wipe it.
-- Overlay boxes are skipped. A `GATE:<reason>` chip is drawn.
-- Analyzer + replica head trackers reset. Telemetry STR/TREMOR = 0.
-
-When raw skip but still published Live (short menu flash): idle telemetry with
-that reason, **no** analyzer reset.
-
----
-
-## Aim scoring
-
-FPS reticles sit at screen center. Cheats snap the **camera**, not a crosshair
-sprite.
-
-`CrosshairKinematicsAnalyzer` (`src/core/anomaly_detector.py`):
+FPS reticles sit at screen centre; cheats move the **camera**.
 
 1. HUD-mask the analysis frame; zero facecam / chrome / chat pixels.
-2. Take a center ROI (~22% of the frame). The reticle is the geometric centre
-   unless a clearly isolated bright mark sits within 12 px (the old refinement
-   chased random bright specks ±20 px per frame and injected fake tremor).
-3. Phase-correlation vs the previous ROI → scene translation `(dx, dy)`; aim
-   delta is the negation. Fine estimate from four edge bands (sub-pixel), plus
-   a coarse whole-ROI estimate that takes over when they disagree — the bands
-   cannot see a 60 px snap and used to report it as ~7 px.
-4. Over an 18-sample window: straightness = displacement / path length;
-   tremor = max(residual variance off a line, step variance); **jerk** =
-   variance of the second difference of the path (hand tremor while tracking a
-   *curving* target — a line fit reads a smooth curve as tremor 10–16 while
-   the hand is doing nothing).
-5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 16 px and straightness ≥ 0.985 held
-   **continuously for ≥ 0.25 s**. `MECHANICAL_LOCK_NO_TREMOR`: fast, with
-   tremor *or* jerk ≤ 0.45, for a lock streak held ≥ 0.12 s. Brief
-   measurement dropouts (flat texture) do not reset the hold clocks.
+2. Centre ROI (~22 %). Reticle = geometric centre unless a clearly isolated
+   bright mark sits within 12 px (the old refinement chased specks ±20 px and
+   injected fake tremor).
+3. Phase correlation vs the previous ROI → scene translation; aim delta is the
+   negation. Fine estimate from four edge bands, coarse whole-ROI estimate takes
+   over when they disagree (bands read a 60 px snap as ~7 px).
+4. 18-sample window: straightness = displacement / path length; tremor =
+   max(residual variance off a line, step variance); **jerk** = variance of the
+   second difference (a bot tracking a *curving* target reads as tremor 10–16 on
+   a line fit while the hand does nothing).
+5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 16 px, straightness ≥ 0.985 **and
+   jerk ≤ 4**, held **≥ 0.25 s**. The jerk condition came from two live false
+   positives: fast whips with straightness 0.99 but jerk 134 and 568 — a hand
+   shaking hard along a straight-ish path is not a scripted line (which
+   measures < 1). `MECHANICAL_LOCK_NO_TREMOR`: fast with tremor *or* jerk
+   ≤ 0.45 held ≥ 0.12 s. Hold clocks survive brief measurement dropouts.
 
-**Why time-based.** Measured on 2560×1440@144 legit Warzone highlights
-(~5,600 analysed frames): straightness ≥ 0.985 occurs on 7–48 frames per clip
-(every flick is briefly perfectly straight), single steps reach 47 px at
-960×540, but tremor ≤ 0.45 while moving fast occurred **zero** times. So a
-single-window snapshot or a raw step size is not evidence; a *sustained*
-tremor-free or perfectly straight run is. Frame-count persistence also made
-60 Hz and 144 Hz sources behave differently; everything is now in seconds.
+**Why time-based:** on ~5,600 analysed frames of legit 1440p144 Warzone,
+straightness ≥ 0.985 occurs 7–48× per clip (every flick is briefly straight),
+single steps reach 47 px, but fast + tremor ≤ 0.45 occurred **zero** times.
+Frame-count persistence also behaved differently at 60 vs 144 Hz.
 
-Replica-aim (`AntiCheatPipeline._score_replica_aim`), using YOLO boxes when
-present. Detections whose centre falls in the game profile's
-`detection_ignore_frac` (the player's own weapon/hands, bottom-centre) are
-discarded first — the largest "person" YOLO finds in legit footage is the
-viewmodel.
+Replica-aim with YOLO boxes (detections inside the profile's
+`detection_ignore_frac` — the player's own weapon — are discarded first):
 
 | event | idea |
 |---|---|
-| `SNAP_TO_TARGET` | step ≥ 12 px that lands ≤ 34 px from a player head, moving toward where the head was; the verdict is latched for 0.35 s while the aim stays on that head so a one-frame snap survives the persistence gate |
-| `STICKY_AIM` | reticle stays ≤ 22 px from a head while the *camera* is moving, for ≥ 6 hits (a perfect lock keeps the head still on screen — camera motion is the evidence) |
-| `FLICK_SNAP` | one step much larger than mean velocity, landing near the nearest head |
+| `SNAP_TO_TARGET` | step ≥ 12 px landing ≤ 34 px from a head, moving toward where the head was; latched 0.35 s while aim stays on it |
+| `STICKY_AIM` | reticle ≤ 22 px from a head while the *camera* moves, ≥ 6 hits (a perfect lock keeps the head still on screen) |
+| `FLICK_SNAP` | one step ≫ mean velocity landing near the nearest head |
 
-Kinematic flags without a replica event still require a YOLO box overlapping the
-reticle (plus corroboration margin) when the detector is ready — otherwise the
-event is dropped. A verdict must then persist 0.05 s (target-corroborated) or
-0.20 s (free-space) and is reported **once per streak**.
+Kinematic flags without a replica event still need a YOLO box under the reticle
+when the detector is ready. A verdict must persist 0.05 s (target-corroborated)
+or 0.20 s (free-space) and is reported once per streak. Events are JSONL lines
+in `logs/`.
 
-Validation: `tests/test_aim_tracker.py` covers a jittery human flick (no flag)
-and bot line / curve-lock / snap-to-head patterns (must flag). The grey
-`clean_*.mp4` / `suspicious_*.mp4` clips under `data/` are the synthetic
-fixtures from `tools/make_synthetic_eval.py`, not captures — they smoke-test
-the math and are far easier than real footage. Precision is measured with
-`tools/import_dataset.py --analyze` on real legit VODs; recall against real
-cheats still needs labelled cheat footage.
+## Profiles
 
-Events are `CheatEvent` JSONL lines under `logs/`. Suspicious clips can be
-exported when the type is snap / sticky / mechanical lock.
+`source_profile`: `hdmi_game` (facecam ignore `(0.62, 0.42, 0.99, 0.82)` unless
+`facecam_roi`), `stream_window` / `vod_file` (top 0–0.10, bottom 0.88–1.0, chat
+0.80–1.0, facecam). `game_profile` JSON (`config/game_profiles/`): HUD mask
+fractions, HUD-energy requirement, `detection_ignore_frac` (viewmodel).
 
----
+## Baseline recorder (`src/core/dataset_exporter.py`)
 
-## YOLO
-
-`PixelVisionObjectDetector` loads `data/models/yolov8n.onnx` (gitignored).
-Default class list is COCO person (`0`).
-
-Boxes live in **analysis** space (960×540). Overlays scale them to display
-space. Centers inside ignore rects or boxes > 35% of the frame are dropped.
-
-Live capture does not run YOLO unless the left-rail **ANALYZE LIVE** box is
-checked (desktop/task-manager frames false-positive). VOD always can.
-
----
+Frames → 8-deep queue → ffmpeg encoder process (`h264_nvenc` → `h264_qsv` →
+`h264_amf` → `libx264`, probed once at startup; OpenCV writers last resort at
+~23 fps). Encoder opened before the first frame; 64 MB stdin pipe absorbs
+start-up. Stamped with the measured unique-picture rate. `stop()` is instant;
+the trailer is written in the background; the app waits ≤ 10 s on exit.
 
 ## UI
 
-The window is three pieces: a 44 px control bar, the tool rail (toggle with
-**TOOLS**), and the video canvas, which runs to the right and bottom edges. The
-VOD scrubber appears under the canvas only while a file is mounted.
-
 | piece | job |
 |---|---|
-| `ControlBar` | Import VOD, Rescan, TOOLS, live status text (mode · profile · warnings, elided with tooltip), optional RES/FPS pins (VOD only) |
-| `LeftRail` | centred brand + **RECORD CLEAN BASELINE**; SOURCE (**device dropdown** incl. virtual cameras, mode, feed rate, pipe, **source profile combo**, ignore-rect count, baseline state); DETECT (YOLO / tracks / gate / ANALYZE LIVE); SIGNAL (STR + TREMOR sparkline); INCIDENTS (flag table with count; double-click seeks a VOD) |
-| `VideoCanvas` | paints the latest rendered frame; `RenderWorker` builds it off the UI thread and hands it over through a single-slot mailbox (no backlog) |
-| View modes | STANDARD, HEATMAP, FLAGGED |
-
-Paint path: `RenderWorker` always renders the **live** frame (never the gate's
-held frame, which used to freeze the picture and snap forward). If the gate is
-not live, skip overlays and stamp `GATE:<reason>`.
-
----
-
-## Source and game profiles
-
-`source_profile` (`config/settings.json` or the PROFILE combo in the SOURCE card):
-
-| id | use | ignore rects |
-|---|---|---|
-| `hdmi_game` | capture card | facecam `(0.62, 0.42, 0.99, 0.82)` unless `facecam_roi` is set |
-| `stream_window` | Kick/Twitch/YouTube window | top 0–0.10, bottom 0.88–1.0, chat 0.80–1.0, facecam |
-| `vod_file` | mounted file (HDMI VODs often switch here) | same as stream window |
-
-`game_profile` JSON under `config/game_profiles/` (`warzone`, `generic`) sets
-HUD mask fractions and whether HUD energy is required for “live gameplay”.
-
----
-
-## Settings (`config/settings.json`)
-
-| key | meaning |
-|---|---|
-| `capture_mode` | `camera` or `screen` |
-| `source_profile` | `hdmi_game` / `stream_window` / `vod_file` |
-| `game_profile` | `warzone` (default) or `generic` |
-| `capture_width` / `height` / `fps` | requested mode; AUTO calibrates the card |
-| `playback_fps` | VOD; `0` = use file (then clamp 12–120) |
-| `player_detector_model_path` | ONNX, default `data/models/yolov8n.onnx` |
-| `detection_fps` | YOLO thread target |
-| `facecam_roi` | empty = default ignore box |
-| `stream_chat_ignore` | right-chat ignore on stream/VOD |
-| `window_title` | `CheatVision` |
-
----
-
-## Dataset and training
-
-Drop clips in `data/clean/` (legit) and `data/suspicious/` (cheat). Both are
-gitignored.
-
-**RECORD CLEAN BASELINE** writes `data/clean/baseline_session_<ts>.mp4` from
-the live feed. Frames go through a small queue into an ffmpeg encoder process —
-`h264_nvenc` → `h264_qsv` → `h264_amf` → `libx264`, whichever works on the
-machine (probed once at startup) — with OpenCV's writers only as a last resort
-(they manage ~23 fps at 1440p, which used to drop most frames and let the queue
-balloon to 660 MB). Only new pictures are recorded and the file is stamped with
-the measured unique-picture rate, so it plays back at real speed. Stopping is
-instant for the UI; the mp4 trailer is written in the background (the app waits
-up to 10 s for it on exit). The log line `[EXPORT] baseline saved ...` reports
-frames written and any drops.
-
-```bash
-python tools/import_dataset.py --input <clips> --labels <csv> --output data
-python src/core/train_workflow.py
-```
-
-`train_workflow.py` inventories clips, builds feature tensors (velocity,
-straightness, tremor, snap size) via `dataset_loader`, fits
-`PixelVisionClassifier`, exports `data/models/cheatvision_detector.onnx`.
-Torch is only required for that path (`pip install -r requirements.txt` then
-`torch`). It does **not** train on the rule engine’s own flags.
-
-`tools/make_synthetic_eval.py` builds fake clean vs mechanical clips.
-`python -m unittest discover -s tests -v` covers SceneGate, aim tracker, and
-coordinate-space scaling.
-
----
+| `ControlBar` | IMPORT, RESCAN, TOOLS, elided status text, RES/FPS pins (VOD only) |
+| `LeftRail` | centred brand, RECORD CLEAN BASELINE, SOURCE (device + profile combos, MODE/FEED/PIPE, IGNORE/BASE), DETECT, SIGNAL, INCIDENTS |
+| `VideoCanvas` | paints the latest rendered frame; emits `viewportResized` so the render target always matches the real canvas (a 320×180 placeholder used to be upscaled ~4× until the first window resize) |
 
 ## Layout
 
 | path | role |
 |---|---|
 | `main.py` | entry |
-| `src/app.py` | Qt bootstrap + crash log |
-| `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, freeze, graceful ffmpeg lifecycle + job object |
+| `src/app.py` | Qt bootstrap, OpenCV thread cap, crash log |
+| `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, virtual cameras, freeze, graceful ffmpeg lifecycle + job object |
 | `src/core/scene_gate.py` | Live/Held hysteresis |
 | `src/core/anti_cheat_pipeline.py` | skip reasons, gate, kinematics, replica-aim, events |
 | `src/core/anomaly_detector.py` | phase-correlation aim |
-| `src/core/hud_masker.py` | fractional HUD mask, letterbox, HUD energy |
-| `src/core/game_profiles.py` | JSON HUD layouts |
-| `src/core/object_detector.py` | YOLO + IOU tracker |
-| `src/core/dataset_exporter.py` | clean baseline (ffmpeg/NVENC pipe) + flagged clips |
-| `src/core/train_workflow.py` | optional classifier |
-| `src/ui/main_window.py` | composition root, worker wiring |
-| `src/ui/control_bar.py` / `left_rail.py` / `video_canvas.py` / `incident_queue.py` / `playback_controls.py` / `theme.py` | widgets |
+| `src/core/hud_masker.py` | HUD mask, letterbox, HUD energy, viewmodel exclusion |
+| `src/core/game_profiles.py` | JSON game profiles |
+| `src/core/object_detector.py` | YOLO (ONNX Runtime) + IOU tracker |
+| `src/core/dataset_exporter.py` | baseline recorder |
+| `src/core/evidence.py` | per-incident proof: annotated snapshot, pre/post clip, event.json (`data/incidents/`) |
+| `src/core/train_workflow.py` | optional classifier (needs torch) |
+| `src/ui/main_window.py` | composition root, worker wiring, settings persistence |
 | `src/ui/workers.py` | capture / playback / analysis / detection / render threads |
-| `config/settings.json` | defaults |
-| `config/game_profiles/` | `warzone.json`, `generic.json` |
-| `tests/` | unit tests |
+| `src/ui/control_bar.py`, `left_rail.py`, `video_canvas.py`, `incident_queue.py`, `playback_controls.py`, `theme.py` | widgets |
+| `tools/` | `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py` |
+| `tests/` | 27 unit tests |

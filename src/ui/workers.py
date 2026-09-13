@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from src.core.anti_cheat_pipeline import AntiCheatPipeline, CheatEvent, FrameContext
 from src.core.dataset_exporter import PixelVisionDatasetExporter
+from src.core.evidence import EvidenceRecorder
 from src.core.frame_source import FFmpegRawVideoCapture, FrameSource
 
 _GATE_CHIP_FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -533,10 +534,17 @@ class AnalysisWorker(QObject):
     cheatEventDetected = Signal(object)
     telemetryUpdated = Signal(dict)
 
-    def __init__(self, pipeline: AntiCheatPipeline, dataset_exporter: PixelVisionDatasetExporter, capture_worker: CaptureWorker):
+    def __init__(
+        self,
+        pipeline: AntiCheatPipeline,
+        dataset_exporter: PixelVisionDatasetExporter,
+        capture_worker: CaptureWorker,
+        evidence: EvidenceRecorder | None = None,
+    ):
         super().__init__()
         self._pipeline = pipeline
         self._dataset_exporter = dataset_exporter
+        self._evidence = evidence
         self._source_lock = threading.Lock()
         self._capture_worker = capture_worker
         self._source: CaptureWorker | PlaybackWorker = capture_worker
@@ -549,6 +557,8 @@ class AnalysisWorker(QObject):
             if isinstance(source, CaptureWorker):
                 self._capture_worker = source
             self._last_analyzed_frame_id = -1
+        if self._evidence is not None:
+            self._evidence.clear()
 
     @Slot()
     def start(self) -> None:
@@ -569,6 +579,10 @@ class AnalysisWorker(QObject):
             # three full-resolution colour conversions each.
             if ctx.analysis_frame is None:
                 ctx.analysis_frame = _downscale(ctx.frame, 960, 540)
+            # The analysis frame is already 960x540: the evidence buffer keeps
+            # a reference to it (no extra copy or resize per frame).
+            if self._evidence is not None:
+                self._evidence.push_frame(ctx.analysis_frame, ctx.timestamp)
 
             event = self._pipeline.process_frame(frame_context=ctx)
             with self._source_lock:
@@ -584,10 +598,14 @@ class AnalysisWorker(QObject):
                 last_flagged = flagged
 
             if event is not None:
+                # Proof first, so the folder exists by the time the UI row appears.
+                if self._evidence is not None:
+                    try:
+                        folder = self._evidence.capture(event, source_label=getattr(ctx, "source", ""))
+                        event.telemetry_data["evidence_dir"] = str(folder)
+                    except Exception as exc:
+                        print(f"[EVIDENCE] [WARN] capture failed: {exc!r}")
                 self.cheatEventDetected.emit(event)
-                if source is capture_worker and self._pipeline.should_export_suspicious_clip():
-                    frames = capture_worker.get_recent_frame_cache()
-                    self._dataset_exporter.export_suspicious_incident_clip(frames, event.frame_id)
 
     def stop(self) -> None:
         self._stop_event.set()

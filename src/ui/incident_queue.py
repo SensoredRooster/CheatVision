@@ -86,9 +86,10 @@ class IncidentQueueModel(QAbstractTableModel):
 
 
 class IncidentQueueTable(QTableView):
-    """Live cheat-flag detection queue; double-click a row to seek the canvas to that frame."""
+    """Flag list; double-click a row to open its evidence folder (and seek a mounted VOD to that frame)."""
 
     seekRequested = Signal(int)
+    incidentActivated = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -98,6 +99,7 @@ class IncidentQueueTable(QTableView):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.verticalHeader().setVisible(False)
+        self.setToolTip("Double-click an incident to open its proof folder (snapshot, clip, event.json).")
         header = self.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -108,6 +110,7 @@ class IncidentQueueTable(QTableView):
     def _on_row_double_clicked(self, index: QModelIndex) -> None:
         event = self._model.event_at(index.row())
         if event is not None:
+            self.incidentActivated.emit(event)
             self.seekRequested.emit(event.frame_id)
 
     def add_event(self, event: CheatEvent) -> None:

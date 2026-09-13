@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import time
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Slot
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import Qt, QThread, QUrl, Slot
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 from src.core.anti_cheat_pipeline import SOURCE_PROFILE_LABELS, AntiCheatPipeline, CheatEvent
 from src.core.dataset_exporter import PixelVisionDatasetExporter
 from src.core.event_logger import EventLogger
+from src.core.evidence import EvidenceRecorder
 from src.core.frame_source import discover_directshow_devices, pick_preferred_capture_device
 from src.core.live_overlay import PixelVisionLiveOverlay
 from src.ui.advanced_overlay import PixelVisionAdvancedOverlayEngine
@@ -54,6 +56,7 @@ class MainWindow(QMainWindow):
 
         self.event_logger = EventLogger(log_dir)
         self.dataset_exporter = PixelVisionDatasetExporter(target_resolution=target_resolution, project_root=project_root)
+        self.evidence = EvidenceRecorder(project_root)
         facecam_roi = settings.get("facecam_roi") or None
 
         self.pipeline = AntiCheatPipeline(
@@ -131,6 +134,7 @@ class MainWindow(QMainWindow):
         self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
         self.left_rail.deviceSelected.connect(self._on_device_selected)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
+        self.left_rail.incident_table.incidentActivated.connect(self._on_incident_activated)
         self.body_splitter.addWidget(self.left_rail)
 
         self.video_canvas = VideoCanvas(self)
@@ -167,7 +171,7 @@ class MainWindow(QMainWindow):
 
         self._capture_worker, self._capture_thread = self._make_capture_worker(preferred)
 
-        self._analysis_worker = AnalysisWorker(self.pipeline, self.dataset_exporter, self._capture_worker)
+        self._analysis_worker = AnalysisWorker(self.pipeline, self.dataset_exporter, self._capture_worker, evidence=self.evidence)
         self._analysis_thread = QThread(self)
         self._analysis_worker.moveToThread(self._analysis_thread)
         self._analysis_worker.cheatEventDetected.connect(self._on_cheat_event_detected)
@@ -430,6 +434,20 @@ class MainWindow(QMainWindow):
     def _on_seek_requested(self, frame_id: int) -> None:
         if self._playback_worker is not None:
             self._playback_worker.seek(frame_id)
+
+    def _on_incident_activated(self, event: CheatEvent) -> None:
+        """Open the incident's proof folder in Explorer (snapshot.png, clip.mp4, event.json)."""
+        folder = (event.telemetry_data or {}).get("evidence_dir")
+        if not folder or not Path(folder).is_dir():
+            self.status_label.setText("No evidence folder recorded for this incident")
+            return
+        snapshot = Path(folder) / "snapshot.png"
+        # Select the snapshot if it has been written yet; otherwise just open the folder.
+        if snapshot.is_file():
+            subprocess.Popen(["explorer", "/select,", str(snapshot)])
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        self.status_label.setText(f"Opened evidence: {Path(folder).name}")
 
     def _on_analyze_display_toggled(self, checked: bool) -> None:
         self._analyze_display_anyway = checked
@@ -736,6 +754,10 @@ class MainWindow(QMainWindow):
             self._analysis_thread.quit()
             self._analysis_thread.wait(2000)
         self.event_logger.log("Application closed")
+        try:
+            self.evidence.close()
+        except Exception:
+            pass
         super().closeEvent(event)
 
     @Slot(int, int)

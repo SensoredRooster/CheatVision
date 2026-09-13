@@ -395,6 +395,11 @@ class AntiCheatPipeline:
             return None
 
         masked_frame = self.hud_masker.apply_mask(source_frame)
+        if masked_frame is source_frame:
+            # No HUD mask for this profile: apply_mask returned the caller's
+            # array. Copy before zeroing ignore rects so the shared analysis
+            # frame (also read by the detector and kept as evidence) stays intact.
+            masked_frame = source_frame.copy()
         masked_frame = self._zero_ignore_pixels(masked_frame)
         if self._check_duplicate(masked_frame):
             return None

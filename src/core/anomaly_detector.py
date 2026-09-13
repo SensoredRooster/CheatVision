@@ -46,6 +46,7 @@ class CrosshairKinematicsAnalyzer:
         lock_streak: int = 3,
         line_hold_seconds: float = 0.25,
         lock_hold_seconds: float = 0.12,
+        line_max_jerk: float = 4.0,
     ) -> None:
         self.window_size = window_size
         self.roi_ratio = roi_ratio
@@ -60,6 +61,10 @@ class CrosshairKinematicsAnalyzer:
         # frames at 72fps ~ 0.3s across a whole clip, median far lower).
         self.line_hold_seconds = line_hold_seconds
         self.lock_hold_seconds = lock_hold_seconds
+        # Jerk (variance of the path's second difference) allowed for a
+        # "geometric line". Legit fast whips measured 100-400; a scripted pan
+        # is < 1.
+        self.line_max_jerk = line_max_jerk
         self.delta_history: deque[tuple[float, float]] = deque(maxlen=window_size)
         self.previous_roi: Optional[np.ndarray] = None
         self.previous_gray: Optional[np.ndarray] = None
@@ -289,7 +294,16 @@ class CrosshairKinematicsAnalyzer:
             # once it has held continuously for line_hold_seconds. A single
             # oversized step (old snap_threshold rule) is not evidence on its
             # own: legit flicks reach 47px at 960x540.
-            line_now = mean_velocity >= self.velocity_threshold and straightness >= self.straightness_threshold
+            # A machine-drawn line is straight *and* smooth. Straightness alone
+            # (displacement / path length) stays >= 0.985 on a fast whip even
+            # when the hand is shaking hard along the way -- the two live
+            # flags that motivated this had tremor 110 and 419 -- so the line
+            # rule also demands low jerk, i.e. no frame-to-frame jitter.
+            line_now = (
+                mean_velocity >= self.velocity_threshold
+                and straightness >= self.straightness_threshold
+                and jerk_variance <= self.line_max_jerk
+            )
             if line_now:
                 if self._line_since is None:
                     self._line_since = now
