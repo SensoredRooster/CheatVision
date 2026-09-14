@@ -9,7 +9,7 @@ It only looks at pixels. It never touches, reads, or injects into the game.
 You can feed it:
 
 - a **capture card** (HDMI from the gaming PC or console),
-- another app's **virtual camera** (so you can record with Streaming Center/OBS at the same time),
+- another app's **virtual camera** (so you can record with OBS / Streaming Center / Streamlabs at the same time),
 - a **saved video file** (VOD review),
 - a **browser window** showing a Twitch/Kick/YouTube stream.
 
@@ -24,7 +24,7 @@ Repo: https://github.com/SensoredRooster/CheatVision
 | Windows 10/11 PC | the app is Windows-only (DirectShow capture) |
 | Python 3.11 or newer | https://www.python.org/downloads/ — tick **"Add python.exe to PATH"** during install |
 | ffmpeg | https://www.gyan.dev/ffmpeg/builds/ (or `winget install ffmpeg`). Must be on PATH: open a terminal and type `ffmpeg -version` — if it prints a version, you're good |
-| a video source | capture card (tested: AVerMedia Live Gamer 4K / GC573), or a video file |
+| a video source | any capture card Windows can see (AVerMedia, Elgato, Magewell, Razer, generic USB HDMI dongles…) — the app lists **your** hardware under the name Windows gives it. Developed and tested on an AVerMedia Live Gamer 4K (GC573). Or a video file. |
 | optional: NVIDIA/Intel/AMD GPU | makes baseline recording free (hardware encoder). Works without |
 
 ---
@@ -113,7 +113,7 @@ card. Check the HDMI cable and that the gaming PC/console is outputting.
 
 | row | meaning |
 |---|---|
-| source selector | **device · profile** in one pick, e.g. `GC573 1 · HDMI GAME` or `StreamCenter VCam · STREAM WIN`. The device is *what to read* (capture card, or another app's **Virtual Camera**, see §5); the profile is *which screen regions to ignore* (see §6). Hover it for the full device name. Remembered across restarts. |
+| source selector | **device · profile** in one pick, e.g. `HD60 X · HDMI GAME`, `GC573 1 · HDMI GAME` or `OBS VCam · STREAM WIN` — the device part is **your** hardware's own name as Windows reports it, trimmed of vendor boilerplate to fit. The device is *what to read* (capture card, or another app's **Virtual Camera**, see §5); the profile is *which screen regions to ignore* (see §6). Hover it for the full device name. Remembered across restarts. |
 | **MODE** | a picker. **AUTO** tests the device's modes, keeps the fastest one that streams cleanly, and shows what it negotiated (`AUTO · 2560×1440 @ 144`). The other entries are **only the modes this device advertised** at the last scan — nothing generic. Pick one to restart capture on it; if the device rejects it, capture falls back to AUTO and the status text says so. Remembered across restarts. |
 | **FEED** | what the device is **really delivering**: `71 fps (60 new)` = 71 frames/s handed over, 60 of them new pictures. This is the honest number — see §7. Turns red if starved. |
 | **PIPE** | how frames get in: `CAP_FFMPEG` (card), `VIRTUAL_CAM`, `GDI_BROWSER`, `MSS` (screen), `VOD` |
@@ -174,7 +174,7 @@ or set `playback_fps` in `config/settings.json`.
 
 ---
 
-## 5. Record with Streaming Center / OBS **and** run CheatVision at the same time
+## 5. Record with OBS / Streaming Center **and** run CheatVision at the same time
 
 A capture card only lets **one program** read it. Two programs opening the card
 = one of them gets a trickle of frames (CheatVision will show a slideshow and
@@ -182,9 +182,9 @@ the amber warning *CAPTURE CARD DELIVERING ONLY N FPS*).
 
 The fix is built in:
 
-1. In Streaming Center (or OBS), select the card as the source and turn on its
+1. In OBS (or Streaming Center / Streamlabs), select the card as the source and turn on its
    **Virtual Camera** output. Record/stream as usual.
-2. In CheatVision, SOURCE → selector → **StreamCenter VCam · HDMI GAME**
+2. In CheatVision, SOURCE → selector → that app's **… VCam · HDMI GAME** entry (e.g. `OBS VCam · HDMI GAME`, `StreamCenter VCam · HDMI GAME`)
    (or *OBS Virtual Camera*).
 3. PIPE shows `VIRTUAL_CAM`, FEED shows `60 fps`. Both apps now run together.
 
@@ -223,16 +223,18 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
   you chose. Neither is the HDMI signal's own refresh rate — a capture card
   does not expose that to Windows, it only lists the capture modes it can
   output, and it repeats or skips frames to fit.
-- **FEED** is what *arrives*. On the GC573 at 1440p the driver hands over ~70
-  frames/s no matter what you request, and the HDMI signal itself carries **60
-  new pictures per second** — so FEED reads `71 fps (60 new)`. That is not a
-  bug in CheatVision; it is the card. Duplicated frames are detected and thrown
-  away so the analyser only ever sees new pictures.
+- **FEED** is what *arrives*. Every card has its own delivery ceiling per
+  resolution, and FEED shows yours. Example from the development card (GC573)
+  at 1440p: the driver hands over ~70 frames/s no matter what you request, and
+  with a 60 Hz HDMI signal FEED reads `71 fps (60 new)`. That is not a bug in
+  CheatVision; it is the card. Duplicated frames are detected and thrown away
+  so the analyser only ever sees new pictures.
 - Want more than 60 new pictures? That is decided on the **gaming PC**: the
   refresh rate Windows assigns to the capture-card "monitor". A 360 Hz main
   monitor cloned with the card forces a common rate.
-- The card's own maximum at 1440p is 144 (advertised) / ~70 (delivered). It
-  will do 240 at 1080p.
+- The development card's own maximum at 1440p is 144 (advertised) / ~70
+  (delivered); it does 240 at 1080p. Your card's numbers will differ: the MODE
+  picker lists what it advertises, FEED shows what it delivers.
 
 ---
 
@@ -244,7 +246,7 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
 | `CAPTURE CARD DELIVERING ONLY N FPS` (amber) | another app grabbed the card mid-session | same as above |
 | `NO PIXEL CHANGE DETECTED` / SIGNAL **FREEZE** | picture identical for 1.5 s | pause menu, alt-tab, or no signal. Clears by itself when motion returns |
 | `Waiting for capture device` | device opened but sends nothing | check HDMI cable / source power |
-| `… is registered but not sending frames` | virtual camera picked but its host app's output is off | turn on Virtual Camera in Streaming Center/OBS, press **RESCAN** |
+| `… is registered but not sending frames` | virtual camera picked but its host app's output is off | turn on Virtual Camera in OBS / Streaming Center, press **RESCAN** |
 | `⚠ manual … not supported, auto-calibrated instead` | you pinned a MODE (or VOD RES/FPS) the device can't do | pick **AUTO** in the SOURCE card's MODE picker |
 | `No video devices found` in the SOURCE selector | Windows has no DirectShow video device right now | plug the card in / install its driver, press **RESCAN** |
 | `ffmpeg not found on PATH` in the SOURCE selector | ffmpeg is missing (§0) | install it, open a new terminal, press **RESCAN** |
@@ -283,7 +285,7 @@ Every flag also gets its own proof folder under `data/incidents/` automatically
 | flag events (one JSON line each, all sessions) | `logs/session_<time>.jsonl` |
 | plain-text app log | `logs/events.log` |
 | baseline recordings | `data/clean/` |
-| your device / profile choices | `config/settings.json` (written by the app) |
+| your device / MODE / profile choices | `config/settings.local.json` (written by the app; git-ignored, so your picks never ship with the repo) |
 | YOLO weights | `data/models/yolov8n.onnx` |
 
 `data/clean`, `data/suspicious`, `data/incidents`, `logs` and the weights are
@@ -291,9 +293,9 @@ Every flag also gets its own proof folder under `data/incidents/` automatically
 
 ---
 
-## 11. Settings file (`config/settings.json`)
+## 11. Settings files (`config/settings.json`, `config/settings.local.json`)
 
-You rarely need to touch this — the app writes the important ones. For reference:
+`settings.json` is the shipped defaults. Everything the app saves for you — capture device, MODE pin — goes to `settings.local.json` beside it, which is git-ignored and layered on top at startup, so nobody's hardware choices ship to anyone else. You rarely need to touch either. For reference:
 
 | key | meaning |
 |---|---|
@@ -303,6 +305,7 @@ You rarely need to touch this — the app writes the important ones. For referen
 | `game_profile` | `warzone` (default) or `generic` |
 | `capture_width` / `capture_height` / `capture_fps` | mode to request; the app verifies it and falls back if the device can't do it |
 | `playback_fps` | force a VOD's rate; `0` = trust the file (accepted range 12–480, else 30) |
+| `capture_resolution_override` | the MODE pin as `{"width", "height", "fps"}`; absent = AUTO (saved automatically, local file) |
 | `player_detector_model_path` | ONNX weights, default `data/models/yolov8n.onnx` |
 | `detection_fps` | how often YOLO runs (default 30) |
 | `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds |
@@ -344,9 +347,9 @@ The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
 
 ## 13. Everyday checklist
 
-1. Plug in / power the source. Start Streaming Center **before** CheatVision if you want to record.
+1. Plug in / power the source. Start OBS / Streaming Center **before** CheatVision if you want to record.
 2. `python main.py`.
-3. SOURCE → pick `GC573 1 · HDMI GAME`, or a `StreamCenter VCam · …` entry if you're recording.
+3. SOURCE → pick your capture card's `… · HDMI GAME` entry, or its `… VCam · …` entry if you're recording.
 4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows ~60 new.
 5. Play. Watch INCIDENTS. Double-check anything flagged by eye.
 6. Optional: RECORD CLEAN BASELINE during matches you know are legit.
@@ -415,7 +418,7 @@ with unbuffered `readinto` straight into the frame array (the 32 KB pipe +
 pixel format only for virtual cameras.
 
 **Shutdown:** ffmpeg gets `q` on stdin and is waited for before anything else;
-hard kill is the fallback. Killing a streaming dshow graph wedges the AVerMedia
+hard kill is the fallback. Killing a streaming dshow graph wedges the development card's AVerMedia
 driver (unkillable zombie owning the card until reboot). All ffmpeg children
 sit in a Windows job object with kill-on-close.
 

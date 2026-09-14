@@ -414,9 +414,13 @@ class MainWindow(QMainWindow):
         self._restart_capture(device)
 
     def _persist_setting(self, key: str, value) -> None:
-        """Write one key back to config/settings.json so the choice survives restarts."""
+        """Save one user choice (device, MODE pin) to config/settings.local.json.
+
+        That file is git-ignored and layered over the shipped settings.json at
+        startup (see src/app.py), so a developer's own hardware picks never
+        become the defaults that ship to everyone else. None removes the key."""
         try:
-            path = Path(self.settings.get("project_root", str(Path.cwd()))) / "config" / "settings.json"
+            path = Path(self.settings.get("project_root", str(Path.cwd()))) / "config" / "settings.local.json"
             data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
             if value is None:
                 data.pop(key, None)

@@ -14,14 +14,35 @@ from src.ui.main_window import MainWindow
 _OPENCV_THREADS = 4
 
 
-def load_settings() -> dict:
-    project_root = Path(__file__).resolve().parent.parent
-    settings_path = project_root / "config" / "settings.json"
+LOCAL_SETTINGS_NAME = "settings.local.json"
+
+
+def load_settings(project_root: Path | None = None) -> dict:
+    """Shipped defaults from config/settings.json, then this machine's own
+    saved choices from config/settings.local.json layered on top.
+
+    The local file is git-ignored. It holds whatever the app remembers for
+    *this* PC (capture device, MODE pin), so a developer's hardware never
+    ends up as the defaults that ship to everyone else."""
+    root = Path(project_root) if project_root is not None else Path(__file__).resolve().parent.parent
+    settings_path = root / "config" / "settings.json"
 
     with settings_path.open("r", encoding="utf-8") as handle:
         settings = json.load(handle)
 
-    settings["project_root"] = str(project_root)
+    local_path = root / "config" / LOCAL_SETTINGS_NAME
+    if local_path.is_file():
+        try:
+            with local_path.open("r", encoding="utf-8") as handle:
+                local = json.load(handle)
+            if isinstance(local, dict):
+                settings.update(local)
+            else:
+                print(f"[SETTINGS] [WARN] {local_path.name} is not a JSON object; ignoring it")
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[SETTINGS] [WARN] could not read {local_path.name}: {exc}")
+
+    settings["project_root"] = str(root)
     return settings
 
 

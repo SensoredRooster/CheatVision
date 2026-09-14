@@ -109,7 +109,7 @@ _DISCRETE_MODE_PATTERN = re.compile(r"(?:pixel_format|vcodec)=(\S+)\s+s=(\d+)x(\
 # mode-rejection (not a bandwidth/overflow signal, and not fixable by
 # retrying or adding delays). Confirmed on real hardware: different
 # resolutions have very different valid fps ranges on the same device (e.g.
-# this AVerMedia card's bgr24 block only accepts 1280x720 at 50-60.0002fps,
+# the development card's (AVerMedia GC573) bgr24 block only accepts 1280x720 at 50-60.0002fps,
 # not 30fps as a generic ladder might guess), so candidates are generated
 # per-resolution from the real advertised range rather than assumed values.
 _FPS_STEP_LADDER = (144.0, 120.0, 90.0, 85.0, 75.0, 60.0, 50.0, 30.0, 24.0)
@@ -153,7 +153,7 @@ _VIRTUAL_CAMERA_FIRST_FRAME_SEC = 4.0
 # other machines/devices don't reintroduce the same false-fail.
 _CALIBRATION_WARMUP_SEC = 1.0
 
-# Measured on this exact hardware (AVerMedia GC573, ffmpeg dshow -> raw pipe
+# Measured on the development card (AVerMedia GC573, ffmpeg dshow -> raw pipe
 # -> unbuffered readinto): 2560x1440 bgr24 at 144fps (~1.59GB/s raw) sustains
 # for the full test window with zero "real-time buffer too full" drops. The
 # old ~545MB/s cliff was an artifact of reading the pipe through Python's
@@ -809,10 +809,11 @@ class FrameSource:
     def _is_capture_card_device(self) -> bool:
         if self._is_virtual_camera_device():
             return False
-        capture_kind = self._capture_kind.lower()
-        capture_name = self._capture_device_name.lower()
-        keywords = ("capture card", "avermedia", "elgato", "decklink", "live gamer", "hdmi", "capture")
-        return any(keyword in capture_kind for keyword in keywords) or any(keyword in capture_name for keyword in keywords)
+        # One classifier for every vendor: whatever infer_device_kind calls a
+        # capture card goes through the ffmpeg dshow calibration path.
+        if "capture" in self._capture_kind.lower():
+            return True
+        return infer_device_kind(self._capture_device_name) == "Capture Card"
 
     def _is_virtual_camera_device(self) -> bool:
         return "virtual" in self._capture_kind.lower() or infer_device_kind(self._capture_device_name) == "Virtual Camera"
@@ -879,7 +880,7 @@ class FrameSource:
                 return capture
         self.last_open_error = capture.get_last_error() or (
             f"{device_name} is registered but not sending frames. Turn on the Virtual Camera "
-            "output in its host app (Streaming Center / OBS), then press RESCAN."
+            "output in its host app (OBS / Streaming Center / Streamlabs), then press RESCAN."
         )
         capture.release()
         return None
@@ -912,7 +913,7 @@ class FrameSource:
         other formats at the same resolution. A device can also report
         several lines for the *same* (format, resolution) pair -- e.g. a
         range line capping at 120fps plus a separate discrete line at
-        144.001fps for bgr24 at 2560x1440 on this AVerMedia card -- so the
+        144.001fps for bgr24 at 2560x1440 on the development card -- so the
         parsed range is a union across every line seen, not just the first."""
         by_format: dict[str, dict[tuple[int, int], tuple[float, float]]] = {}
 
@@ -1409,18 +1410,34 @@ def infer_device_kind(label: str) -> str:
     # only way around the card's one-client-at-a-time limit. Checked first:
     # "Streaming Center Virtual Camera" also matches "camera" below.
     virtual_keywords = ("virtual cam", "virtual camera", "virtualcam", "obs virtual", "streamlabs desktop virtual")
+    # Vendor / model words that only ever appear on capture hardware. This
+    # list decides which capture path a device takes; the UI always shows the
+    # device's own name exactly as Windows reports it, whatever the vendor.
     capture_keywords = (
         "capture card",
         "capture",
+        "grabber",
+        "hdmi",
         "avermedia",
+        "live gamer",
+        "live streamer",
         "elgato",
         "cam link",
+        "game capture",
         "hd60",
         "hd 60",
-        "game capture",
+        "4k60",
+        "magewell",
+        "blackmagic",
         "decklink",
-        "live gamer",
-        "hdmi",
+        "intensity pro",
+        "ultrastudio",
+        "ripsaw",
+        "hauppauge",
+        "shadowcast",
+        "mirabox",
+        "ezcap",
+        "startech",
     )
     webcam_keywords = (
         "webcam",

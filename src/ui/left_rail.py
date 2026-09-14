@@ -29,7 +29,18 @@ _PROFILE_LABELS = {"hdmi_game": "HDMI GAME", "stream_window": "STREAM WIN", "vod
 def _short_device_name(name: str) -> str:
     """Trim vendor boilerplate so 'device · profile' fits the 268px rail."""
     short = name
-    for prefix in ("AVerMedia HD Capture ", "AVerMedia ", "Elgato ", "Logitech "):
+    # Vendor boilerplate only; the model name that identifies *their* card stays.
+    for prefix in (
+        "AVerMedia HD Capture ",
+        "AVerMedia ",
+        "Elgato Game Capture ",
+        "Elgato ",
+        "Magewell ",
+        "Blackmagic ",
+        "Razer ",
+        "Hauppauge ",
+        "Logitech ",
+    ):
         if short.startswith(prefix):
             short = short[len(prefix):]
             break
@@ -172,7 +183,7 @@ class LeftRail(QWidget):
     )
     _SELECTOR_HELP = (
         "Video device + profile. The capture card serves one app at a time; pick a Virtual "
-        "Camera entry (Streaming Center / OBS) to analyse while that app records. The profile "
+        "Camera entry (OBS / Streaming Center / Streamlabs) to analyse while that app records. The profile "
         "part (HDMI GAME / STREAM WINDOW / VOD FILE) decides which screen regions are ignored."
     )
 

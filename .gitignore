@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 venv/
 .env
+# Per-machine choices the app saves (capture device, MODE pin). Never shipped.
+config/settings.local.json
 *.log
 .DS_Store
 .idea/
