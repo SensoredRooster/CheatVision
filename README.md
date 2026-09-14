@@ -257,23 +257,29 @@ more detail, e.g. `[CAPTURE] [CALIBRATE] …`, `[EXPORT] baseline saved …`.
 
 ---
 
-## 9. Recording a clean baseline
+## 9. Recording
 
-**RECORD CLEAN BASELINE** (left panel, under the brand) saves the live feed to
-`data/clean/baseline_session_<time>.mp4`. Press again to stop. Use it to build a
-library of gameplay you *know* is legit — that is what the thresholds are tuned
-against, and what a classifier would train on.
+Two buttons in the left rail, under the brand. Both write GPU-encoded mp4s
+(`h264_nvenc` → `h264_qsv` → `h264_amf`, falling back to `libx264`), stamp the
+file with the real unique-picture rate so it plays at true speed, and finalise
+in the background the instant you stop (closing the app waits up to 10 s for
+that). They are independent — you can run both at once.
 
-- Encoded on the GPU (`h264_nvenc` → `h264_qsv` → `h264_amf`, falling back to
-  `libx264`). Zero dropped frames at 1440p in testing; ~90 MB of memory.
-- Only new pictures are written and the file is stamped with the real rate, so
-  it plays at true speed.
-- Stopping is instant; the file is finalised in the background. Closing the app
-  waits up to 10 s for that.
-- On a VOD the same button reads **MARK VOD AS CLEAN**.
+### Recording a session
 
-Every flag also gets its own proof folder under `data/incidents/` automatically
-(snapshot, clip, JSON) — see the INCIDENTS card in §3.
+**RECORD SESSION** saves the live feed to
+`data/recordings/session_<time>.mp4` — plain evidence of the sitting you're
+monitoring, with no clean/suspicious meaning for training. Live only (a VOD
+already is a file). Press again to stop. Each flag still gets its own proof
+folder under `data/incidents/` regardless (see the INCIDENTS card in §3).
+
+### Recording a clean baseline
+
+**RECORD CLEAN BASELINE** saves the live feed to
+`data/clean/baseline_session_<time>.mp4`. Use it to build a library of gameplay
+you *know* is legit — that is what the thresholds are tuned against, and what a
+classifier would train on. On a VOD the same button reads **MARK VOD AS
+CLEAN**. Zero dropped frames at 1440p in testing; ~90 MB of memory.
 
 ---
 
@@ -284,11 +290,12 @@ Every flag also gets its own proof folder under `data/incidents/` automatically
 | **proof for each flag** (snapshot.png, clip.mp4, event.json) | `data/incidents/<date-time>_<class>_fr<frame>/` |
 | flag events (one JSON line each, all sessions) | `logs/session_<time>.jsonl` |
 | plain-text app log | `logs/events.log` |
+| session recordings (RECORD SESSION) | `data/recordings/` |
 | baseline recordings | `data/clean/` |
 | your device / MODE / profile choices | `config/settings.local.json` (written by the app; git-ignored, so your picks never ship with the repo) |
 | YOLO weights | `data/models/yolov8n.onnx` |
 
-`data/clean`, `data/suspicious`, `data/incidents`, `logs` and the weights are
+`data/recordings`, `data/clean`, `data/suspicious`, `data/incidents`, `logs` and the weights are
 **not** committed to git.
 
 ---

@@ -170,6 +170,7 @@ class RailSection(QFrame):
 class LeftRail(QWidget):
     analyzeToggled = Signal(bool)
     recordBaselineToggled = Signal()
+    recordSessionToggled = Signal()
     # (device_name, source_profile) chosen in the SOURCE selector.
     sourceSelected = Signal(str, str)
     # (width, height, fps) pinned in the MODE picker; (0, 0, 0) means AUTO.
@@ -209,6 +210,20 @@ class LeftRail(QWidget):
         self.record_baseline_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.record_baseline_btn.clicked.connect(self.recordBaselineToggled.emit)
         root.addWidget(self.record_baseline_btn)
+
+        # Plain recording of the watched feed (data/recordings/). Unlike the
+        # baseline button it carries no clean/suspicious meaning — it is the
+        # session's own evidence file. Live only: a VOD already is a file.
+        self.record_session_btn = QPushButton("RECORD SESSION")
+        self.record_session_btn.setObjectName("BaselineButton")
+        self.record_session_btn.setFixedHeight(28)
+        self.record_session_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.record_session_btn.setToolTip(
+            "Save the live feed to data/recordings/session_<time>.mp4 while you monitor. "
+            "Independent of the clean-baseline recorder; both can run at once."
+        )
+        self.record_session_btn.clicked.connect(self.recordSessionToggled.emit)
+        root.addWidget(self.record_session_btn)
 
         # One card for everything about where the picture comes from: device,
         # negotiated mode, real feed rate, pipe, source profile (selectable),
@@ -421,6 +436,11 @@ class LeftRail(QWidget):
             self.record_baseline_btn.setText("STOP MARKING CLEAN" if active else "MARK VOD AS CLEAN")
         else:
             self.record_baseline_btn.setText("STOP BASELINE" if active else "RECORD CLEAN BASELINE")
+
+    def set_recording_session(self, active: bool, stream_mode: str = "live") -> None:
+        self.record_session_btn.setText("STOP RECORDING" if active else "RECORD SESSION")
+        # Recording a VOD would only duplicate a file that already exists.
+        self.record_session_btn.setEnabled(stream_mode == "live")
 
     def add_incident(self, event) -> None:
         self._incident_count += 1

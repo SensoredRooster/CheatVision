@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
         self.left_rail = LeftRail(self)
         self.left_rail.analyzeToggled.connect(self._on_analyze_display_toggled)
         self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
+        self.left_rail.recordSessionToggled.connect(self._on_record_session_toggled)
         self.left_rail.sourceSelected.connect(self._on_source_selected)
         self.left_rail.captureModeSelected.connect(self._on_capture_mode_changed)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
@@ -250,7 +251,12 @@ class MainWindow(QMainWindow):
             self.dataset_exporter.stop_clean_baseline_mode()
         except Exception:
             pass
+        try:
+            self.dataset_exporter.stop_session_recording()
+        except Exception:
+            pass
         self.left_rail.set_recording_baseline(False, self._stream_mode)
+        self.left_rail.set_recording_session(False, self._stream_mode)
         self.control_bar.mount_vod_btn.setEnabled(True)
 
     def _teardown_capture(self) -> None:
@@ -314,6 +320,7 @@ class MainWindow(QMainWindow):
             self._render_worker.set_flagged_track_ids(())
         self._update_detection_enabled()
         self.left_rail.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "vod")
+        self.left_rail.set_recording_session(self.dataset_exporter.is_recording_session, "vod")
 
         self.playback_controls.show()
         self.playback_controls.reset_play_state()
@@ -341,6 +348,26 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"SAMPLING BASELINE · {output_path}")
             self._update_signal_card()
 
+    def _on_record_session_toggled(self) -> None:
+        if self.dataset_exporter.is_recording_session:
+            self.dataset_exporter.stop_session_recording()
+            self.left_rail.set_recording_session(False, self._stream_mode)
+            if not self.dataset_exporter.is_recording_baseline:
+                self.control_bar.mount_vod_btn.setEnabled(True)
+            self.status_label.setText(self._status_text_with_mode())
+        else:
+            if self._stream_mode != "live":
+                return
+            output_path = self.dataset_exporter.start_session_recording()
+            if not output_path:
+                self.status_label.setText("Recording failed: no usable video encoder")
+                return
+            self.left_rail.set_recording_session(True, self._stream_mode)
+            # Importing a VOD tears down live capture, which would end this
+            # recording mid-file; block it the same way the baseline does.
+            self.control_bar.mount_vod_btn.setEnabled(False)
+            self.status_label.setText(f"RECORDING · {output_path}")
+
     def _restart_capture(self, device: dict | None) -> None:
         self._teardown_playback()
         self._teardown_capture()
@@ -363,6 +390,7 @@ class MainWindow(QMainWindow):
             self._render_worker.set_flagged_track_ids(())
         self._update_detection_enabled()
         self.left_rail.set_recording_baseline(self.dataset_exporter.is_recording_baseline, "live")
+        self.left_rail.set_recording_session(self.dataset_exporter.is_recording_session, "live")
         self._launch_capture(device)
 
     def _on_rescan_devices_requested(self) -> None:
@@ -623,7 +651,9 @@ class MainWindow(QMainWindow):
 
     def _on_feed_rate_measured(self, delivered_fps: float, unique_fps: float, starved: bool) -> None:
         self.left_rail.set_feed_rate(delivered_fps, unique_fps, starved=starved)
-        if unique_fps > 0 and not self.dataset_exporter.is_recording_baseline:
+        if unique_fps > 0 and not (
+            self.dataset_exporter.is_recording_baseline or self.dataset_exporter.is_recording_session
+        ):
             # Only new pictures are recorded, so the file must be stamped with
             # the unique-picture rate or it plays back too fast/slow.
             self.dataset_exporter.set_baseline_fps(round(unique_fps))

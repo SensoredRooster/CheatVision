@@ -204,7 +204,8 @@ class _BaselineSession:
     instant for the UI while the file is finalised in the background and a new
     recording can start immediately without sharing any state."""
 
-    def __init__(self, output_stem: Path, fps: float, size: tuple[int, int]):
+    def __init__(self, output_stem: Path, fps: float, size: tuple[int, int], label: str = "baseline"):
+        self.label = label
         self.output_stem = output_stem
         self.output_path: Path = output_stem.with_suffix(".mp4")
         self.fps = max(1.0, float(fps))
@@ -221,7 +222,7 @@ class _BaselineSession:
         self.ok = self._sink is not None
         if not self.ok:
             self.error = "no usable video encoder"
-            print(f"[EXPORT] [WARN] baseline recording aborted: {self.error}")
+            print(f"[EXPORT] [WARN] {self.label} recording aborted: {self.error}")
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -280,7 +281,7 @@ class _BaselineSession:
                     self.error = detail[-200:]
             except Exception:
                 pass
-            summary = f"[EXPORT] baseline saved {self.output_path.name}: {self.frames_written} frames"
+            summary = f"[EXPORT] {self.label} saved {self.output_path.name}: {self.frames_written} frames"
             if self.frames_dropped:
                 summary += f", {self.frames_dropped} dropped (encoder too slow)"
             if self.error:
@@ -293,12 +294,18 @@ class PixelVisionDatasetExporter:
         self.width, self.height = target_resolution
         self.project_root = Path(project_root) if project_root else Path.cwd()
         self.is_recording_baseline = False
+        self.is_recording_session = False
         self.clean_dir = self.project_root / "data" / "clean"
         self.suspicious_dir = self.project_root / "data" / "suspicious"
+        self.recordings_dir = self.project_root / "data" / "recordings"
         self.clean_dir.mkdir(parents=True, exist_ok=True)
         self.suspicious_dir.mkdir(parents=True, exist_ok=True)
+        self.recordings_dir.mkdir(parents=True, exist_ok=True)
         self.baseline_fps = 60.0
         self._session: _BaselineSession | None = None
+        # Plain session recording (data/recordings/): same writer machinery,
+        # completely independent slot so it can run alongside a baseline.
+        self._session_rec: _BaselineSession | None = None
         self._finishing: list[_BaselineSession] = []
         # Find a working encoder now (takes ~1s) so the first recording does
         # not pay for it while frames are already arriving.
@@ -323,6 +330,34 @@ class PixelVisionDatasetExporter:
         self._session = session
         self.is_recording_baseline = True
         return str(session.output_path)
+
+    def start_session_recording(self) -> str:
+        """Record the watched feed to data/recordings/ — evidence of the whole
+        sitting, carrying no clean/suspicious meaning for training."""
+        if self.is_recording_session:
+            return ""
+
+        timestamp = int(time.time())
+        session = _BaselineSession(
+            self.recordings_dir / f"session_{timestamp}",
+            self.baseline_fps,
+            (self.width, self.height),
+            label="session recording",
+        )
+        if not session.ok:
+            return ""
+        self._session_rec = session
+        self.is_recording_session = True
+        return str(session.output_path)
+
+    def stop_session_recording(self) -> None:
+        self.is_recording_session = False
+        session = self._session_rec
+        self._session_rec = None
+        if session is not None:
+            session.stop()
+            self._finishing = [s for s in self._finishing if s.is_alive()]
+            self._finishing.append(session)
 
     def set_target_resolution(self, width: int, height: int) -> None:
         self.width = _even(width)
@@ -352,9 +387,11 @@ class PixelVisionDatasetExporter:
 
     def write_frame(self, frame: np.ndarray) -> None:
         session = self._session
-        if session is None or not self.is_recording_baseline:
-            return
-        session.submit(frame)
+        if session is not None and self.is_recording_baseline:
+            session.submit(frame)
+        recording = self._session_rec
+        if recording is not None and self.is_recording_session:
+            recording.submit(frame)
 
     def export_suspicious_incident_clip(self, historical_frames_buffer: list[np.ndarray], incident_id: int) -> str:
         if not historical_frames_buffer:
