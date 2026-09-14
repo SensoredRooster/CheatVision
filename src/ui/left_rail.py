@@ -161,7 +161,15 @@ class LeftRail(QWidget):
     recordBaselineToggled = Signal()
     # (device_name, source_profile) chosen in the SOURCE selector.
     sourceSelected = Signal(str, str)
+    # (width, height, fps) pinned in the MODE picker; (0, 0, 0) means AUTO.
+    captureModeSelected = Signal(int, int, int)
 
+    _MODE_HELP = (
+        "Capture mode. AUTO tests the device's modes and keeps the fastest one that streams "
+        "cleanly, then shows what it negotiated. The other entries are only the modes this "
+        "device advertised at the last scan. Picking one restarts capture on it; if the device "
+        "rejects it, capture falls back to AUTO and the status text says so."
+    )
     _SELECTOR_HELP = (
         "Video device + profile. The capture card serves one app at a time; pick a Virtual "
         "Camera entry (Streaming Center / OBS) to analyse while that app records. The profile "
@@ -206,13 +214,33 @@ class LeftRail(QWidget):
         self.source_combo.setMinimumContentsLength(18)
         self.source_combo.setToolTip(self._SELECTOR_HELP)
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        self._source_mode = MetricRow("Mode")
+        # MODE is a picker, not a readout: AUTO (labelled with whatever
+        # calibration negotiated) plus only the modes this device advertised
+        # when it was opened. Nothing generic is ever offered.
+        self._mode_row = QWidget()
+        mode_layout = QHBoxLayout(self._mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(8)
+        mode_key = QLabel("MODE")
+        mode_key.setObjectName("RailMetricKey")
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("SourceCombo")
+        self.mode_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.mode_combo.setMinimumContentsLength(14)
+        self.mode_combo.setToolTip(self._MODE_HELP)
+        self.mode_combo.addItem("AUTO", (0, 0, 0))
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_layout.addWidget(mode_key, 0)
+        mode_layout.addWidget(self.mode_combo, 1)
+        self._negotiated_mode_text = ""
+        self._negotiated_low_mode = False
+        self._pinned_mode: tuple[int, int, int] = (0, 0, 0)
         self._source_feed = MetricRow("Feed")
         self._source_backend = MetricRow("Pipe")
         self._ignore_row = MetricRow("Ignore")
         self._baseline_row = MetricRow("Base")
         self.source.add_row(self.source_combo)
-        self.source.add_row(self._source_mode)
+        self.source.add_row(self._mode_row)
         self.source.add_row(self._source_feed)
         self.source.add_row(self._source_backend)
         self.source.add_row(self._ignore_row)
@@ -269,6 +297,64 @@ class LeftRail(QWidget):
         self._current_profile = profile
         self.sourceSelected.emit(str(device_name), str(profile))
 
+    def _on_mode_changed(self, index: int) -> None:
+        data = self.mode_combo.itemData(index)
+        if not data:
+            return
+        width, height, fps = (int(v) for v in data)
+        self._pinned_mode = (width, height, fps)
+        self.captureModeSelected.emit(width, height, fps)
+
+    def _auto_label(self) -> str:
+        if self._negotiated_low_mode:
+            return "AUTO · low mode"
+        if self._negotiated_mode_text:
+            return f"AUTO · {self._negotiated_mode_text}"
+        return "AUTO"
+
+    @staticmethod
+    def _mode_label(mode: tuple[int, int, int]) -> str:
+        return f"{mode[0]}×{mode[1]} @ {mode[2]}"
+
+    def set_capture_modes(self, modes, pinned=None) -> None:
+        """Rebuild the MODE picker from what the device advertised at this open.
+        `pinned` is the user's saved override or None for AUTO. A pin the device
+        no longer advertises is still listed (marked) so it can be seen and cleared."""
+        self._pinned_mode = tuple(int(v) for v in pinned) if pinned else (0, 0, 0)
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.clear()
+        self.mode_combo.addItem(self._auto_label(), (0, 0, 0))
+        listed: set[tuple[int, int, int]] = set()
+        for width, height, fps in modes:
+            mode = (int(width), int(height), int(fps))
+            if mode in listed or min(mode) <= 0:
+                continue
+            listed.add(mode)
+            self.mode_combo.addItem(self._mode_label(mode), mode)
+        if self._pinned_mode != (0, 0, 0) and self._pinned_mode not in listed:
+            self.mode_combo.addItem(f"{self._mode_label(self._pinned_mode)} · not advertised", self._pinned_mode)
+        self._select_pinned_mode()
+        self.mode_combo.blockSignals(False)
+
+    def set_pinned_mode(self, pinned) -> None:
+        """Reflect an override chosen elsewhere (top-bar RES/FPS) without re-emitting."""
+        self._pinned_mode = tuple(int(v) for v in pinned) if pinned else (0, 0, 0)
+        self.mode_combo.blockSignals(True)
+        self._select_pinned_mode()
+        self.mode_combo.blockSignals(False)
+
+    def _select_pinned_mode(self) -> None:
+        for i in range(self.mode_combo.count()):
+            data = self.mode_combo.itemData(i)
+            if data and tuple(int(v) for v in data) == self._pinned_mode:
+                self.mode_combo.setCurrentIndex(i)
+                return
+        self.mode_combo.setCurrentIndex(0)
+
+    def set_mode_picker_enabled(self, enabled: bool) -> None:
+        """Pinning a capture mode only means something while capturing live."""
+        self.mode_combo.setEnabled(bool(enabled))
+
     def set_devices(self, devices: list[dict], current_name: str, current_profile: str | None = None) -> None:
         """Rebuild the selector: one entry per (device, profile) pair. The
         capture card gets HDMI GAME and STREAM WINDOW (some people capture a
@@ -286,6 +372,11 @@ class LeftRail(QWidget):
             for profile in profiles:
                 label = f"{_short_device_name(name)} · {_PROFILE_LABELS[profile]}"
                 self.source_combo.addItem(label, (name, profile))
+        if self.source_combo.count() == 0:
+            # Nothing real to offer: say why (discovery puts the reason in the
+            # label of its single empty-named entry) instead of inventing devices.
+            reason = next((str(d.get("label", "")) for d in devices if not str(d.get("name", ""))), "")
+            self.source_combo.addItem(reason or "No video devices found", None)
         self._select_current()
         self.source_combo.blockSignals(False)
 
@@ -305,11 +396,13 @@ class LeftRail(QWidget):
                 self.source_combo.setCurrentIndex(i)
                 return
         # Device present but this profile isn't offered for it: fall back to
-        # the device's first entry rather than showing a wrong device.
+        # the device's first entry rather than showing a wrong device. The
+        # "no devices" placeholder carries no data and is skipped.
         for i in range(self.source_combo.count()):
-            if self.source_combo.itemData(i)[0] == self._current_device_name:
+            data = self.source_combo.itemData(i)
+            if data and data[0] == self._current_device_name:
                 self.source_combo.setCurrentIndex(i)
-                self._current_profile = self.source_combo.itemData(i)[1]
+                self._current_profile = data[1]
                 return
 
     def set_recording_baseline(self, active: bool, stream_mode: str = "live") -> None:
@@ -332,10 +425,9 @@ class LeftRail(QWidget):
         # The selector shows a shortened device name; keep the full one as its tooltip.
         if name:
             self.source_combo.setToolTip(f"{name}\n\n{self._SELECTOR_HELP}")
-        if low_mode:
-            self._source_mode.set_value("low mode", warn=True)
-        else:
-            self._source_mode.set_value(mode or "—")
+        self._negotiated_mode_text = mode or ""
+        self._negotiated_low_mode = bool(low_mode)
+        self.mode_combo.setItemText(0, self._auto_label())
         self._source_backend.set_value(backend or "—")
         self._source_feed.set_value("—")
 

@@ -107,14 +107,14 @@ card. Check the HDMI cable and that the gaming PC/console is outputting.
 | **RESCAN** | re-list devices and reconnect. Use after plugging in a card or closing another capture app. |
 | **TOOLS** | hide/show the left panel (video gets wider). Detection keeps running either way. |
 | status text | what's connected and how. Turns **amber** with a warning when something is wrong (see §8). |
-| RES / FPS boxes | only appear on VOD; pin a playback size/rate if a file is mis-labelled. |
+| RES / FPS boxes | only appear on VOD; pin a playback size/rate if a file is mis-labelled. For live capture use **MODE** in the SOURCE card. |
 
 ### SOURCE card
 
 | row | meaning |
 |---|---|
 | source selector | **device · profile** in one pick, e.g. `GC573 1 · HDMI GAME` or `StreamCenter VCam · STREAM WIN`. The device is *what to read* (capture card, or another app's **Virtual Camera**, see §5); the profile is *which screen regions to ignore* (see §6). Hover it for the full device name. Remembered across restarts. |
-| **MODE** | resolution and rate **requested** from the device, e.g. `2560×1440 @ 144` |
+| **MODE** | a picker. **AUTO** tests the device's modes, keeps the fastest one that streams cleanly, and shows what it negotiated (`AUTO · 2560×1440 @ 144`). The other entries are **only the modes this device advertised** at the last scan — nothing generic. Pick one to restart capture on it; if the device rejects it, capture falls back to AUTO and the status text says so. Remembered across restarts. |
 | **FEED** | what the device is **really delivering**: `71 fps (60 new)` = 71 frames/s handed over, 60 of them new pictures. This is the honest number — see §7. Turns red if starved. |
 | **PIPE** | how frames get in: `CAP_FFMPEG` (card), `VIRTUAL_CAM`, `GDI_BROWSER`, `MSS` (screen), `VOD` |
 | IGNORE | how many ignore rectangles the profile is applying |
@@ -218,7 +218,11 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
 
 ## 7. Reading the numbers honestly (144 Hz, 60 fps, and all that)
 
-- **MODE** is what was *requested* and accepted (`2560×1440 @ 144`).
+- **MODE** is what was *requested* and accepted: on AUTO the entry shows what
+  calibration negotiated (`AUTO · 2560×1440 @ 144`); a pinned entry is the mode
+  you chose. Neither is the HDMI signal's own refresh rate — a capture card
+  does not expose that to Windows, it only lists the capture modes it can
+  output, and it repeats or skips frames to fit.
 - **FEED** is what *arrives*. On the GC573 at 1440p the driver hands over ~70
   frames/s no matter what you request, and the HDMI signal itself carries **60
   new pictures per second** — so FEED reads `71 fps (60 new)`. That is not a
@@ -241,7 +245,9 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
 | `NO PIXEL CHANGE DETECTED` / SIGNAL **FREEZE** | picture identical for 1.5 s | pause menu, alt-tab, or no signal. Clears by itself when motion returns |
 | `Waiting for capture device` | device opened but sends nothing | check HDMI cable / source power |
 | `… is registered but not sending frames` | virtual camera picked but its host app's output is off | turn on Virtual Camera in Streaming Center/OBS, press **RESCAN** |
-| `⚠ manual … not supported, auto-calibrated instead` | you pinned a RES/FPS the device can't do | pick AUTO |
+| `⚠ manual … not supported, auto-calibrated instead` | you pinned a MODE (or VOD RES/FPS) the device can't do | pick **AUTO** in the SOURCE card's MODE picker |
+| `No video devices found` in the SOURCE selector | Windows has no DirectShow video device right now | plug the card in / install its driver, press **RESCAN** |
+| `ffmpeg not found on PATH` in the SOURCE selector | ffmpeg is missing (§0) | install it, open a new terminal, press **RESCAN** |
 | card refuses to open with *nothing* else running | an earlier ffmpeg got killed mid-stream and wedged the driver (older builds did this) | reboot once. Current builds stop ffmpeg gracefully and can't cause it |
 
 The console window (where you ran `python main.py`) prints the same events with

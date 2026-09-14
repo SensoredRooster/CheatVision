@@ -99,6 +99,9 @@ class CaptureWorker(QObject):
     # (delivered_fps, unique_fps, starved): what the driver is really handing
     # over versus the requested mode, refreshed about once a second.
     feedRateMeasured = Signal(float, float, bool)
+    # list[(width, height, fps)] the device advertised when it was opened, so
+    # the MODE picker offers exactly what this device can do right now.
+    deviceModesListed = Signal(object)
 
     def __init__(self, settings: dict, dataset_exporter: PixelVisionDatasetExporter):
         super().__init__()
@@ -161,6 +164,13 @@ class CaptureWorker(QObject):
         except Exception as exc:
             self.captureError.emit(str(exc))
             return
+
+        # Even a failed open (card busy, pinned mode rejected) has usually
+        # enumerated the device, so the picker can still show its real modes.
+        try:
+            self.deviceModesListed.emit(list(self._frame_source.selectable_modes()))
+        except Exception:
+            pass
 
         if not opened:
             if getattr(self._frame_source, "_follow_browser", False):

@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         self.left_rail.analyzeToggled.connect(self._on_analyze_display_toggled)
         self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
         self.left_rail.sourceSelected.connect(self._on_source_selected)
+        self.left_rail.captureModeSelected.connect(self._on_capture_mode_changed)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
         self.left_rail.incident_table.incidentActivated.connect(self._on_incident_activated)
         self.body_splitter.addWidget(self.left_rail)
@@ -156,6 +157,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.control_bar.set_stream_mode(self._stream_mode)
+        self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
         self.left_rail.set_source_profile(str(self.settings.get("source_profile", "hdmi_game")))
         self._update_signal_card()
 
@@ -226,6 +228,7 @@ class MainWindow(QMainWindow):
         self._capture_worker.streamFrozen.connect(self._on_capture_stream_frozen)
         self._capture_worker.waitingForDevice.connect(self._on_waiting_for_capture)
         self._capture_worker.feedRateMeasured.connect(self._on_feed_rate_measured)
+        self._capture_worker.deviceModesListed.connect(self._on_device_modes_listed)
         self._capture_thread.started.connect(self._capture_worker.start)
 
     def _launch_capture(self, device: dict | None) -> None:
@@ -300,6 +303,7 @@ class MainWindow(QMainWindow):
         self._is_stream_frozen = False
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
+        self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
         if str(self.settings.get("source_profile", "hdmi_game")) == "hdmi_game":
             self._apply_source_profile("stream_window")
         self._update_signal_card()
@@ -352,6 +356,7 @@ class MainWindow(QMainWindow):
         self._is_stream_frozen = False
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
+        self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
         self._update_signal_card()
         self._flagged_track_ids = OrderedDict()
         if self._render_worker is not None:
@@ -413,18 +418,26 @@ class MainWindow(QMainWindow):
         try:
             path = Path(self.settings.get("project_root", str(Path.cwd()))) / "config" / "settings.json"
             data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-            data[key] = value
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
             path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         except Exception as exc:
             print(f"[SETTINGS] [WARN] could not save {key}: {exc}")
 
     def _on_capture_mode_changed(self, width: int, height: int, fps: int) -> None:
         if width > 0 and height > 0 and fps > 0:
-            self.settings["capture_resolution_override"] = {"width": width, "height": height, "fps": fps}
+            override = {"width": int(width), "height": int(height), "fps": int(fps)}
+            self.settings["capture_resolution_override"] = override
+            self._persist_setting("capture_resolution_override", override)
             message = f"Manual capture mode selected: {width}x{height} @ {fps}fps"
         else:
             self.settings.pop("capture_resolution_override", None)
+            self._persist_setting("capture_resolution_override", None)
             message = "Capture mode set to AUTO (auto-calibration)"
+        # Both pickers (rail MODE live, top-bar RES/FPS on VOD) write the same pin.
+        self.left_rail.set_pinned_mode(self._pinned_capture_mode())
 
         capture_alive = self._capture_thread is not None and self._capture_thread.isRunning()
         if not capture_alive:
@@ -512,6 +525,7 @@ class MainWindow(QMainWindow):
             self.status_label.setStyleSheet("")
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
+        self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
         self._update_signal_card()
         # The requested mode (settings.json / manual pick) is deliberately NOT
         # overwritten with what was negotiated: a browser-window or degraded
@@ -587,6 +601,22 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Waiting for capture device")
 
     @Slot(float, float, bool)
+    @Slot(object)
+    def _on_device_modes_listed(self, modes) -> None:
+        """Fresh from this open: only what the device advertised goes in the MODE picker."""
+        self.left_rail.set_capture_modes(list(modes or []), self._pinned_capture_mode())
+
+    def _pinned_capture_mode(self) -> tuple[int, int, int] | None:
+        override = self.settings.get("capture_resolution_override")
+        if not isinstance(override, dict):
+            return None
+        mode = (
+            int(override.get("width", 0) or 0),
+            int(override.get("height", 0) or 0),
+            int(override.get("fps", 0) or 0),
+        )
+        return mode if all(value > 0 for value in mode) else None
+
     def _on_feed_rate_measured(self, delivered_fps: float, unique_fps: float, starved: bool) -> None:
         self.left_rail.set_feed_rate(delivered_fps, unique_fps, starved=starved)
         if unique_fps > 0 and not self.dataset_exporter.is_recording_baseline:

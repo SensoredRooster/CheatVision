@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import time
 import subprocess
 import threading
@@ -160,6 +161,38 @@ _CALIBRATION_WARMUP_SEC = 1.0
 # rate clears this ceiling is skipped before spending a real hardware probe on
 # it; everything under it still goes through the full strict hardware test.
 _BANDWIDTH_CEILING_BYTES_PER_SEC = 1_700_000_000
+
+
+def selectable_modes_from_ranges(
+    resolution_fps_ranges: dict[tuple[int, int], tuple[float, float]],
+    *,
+    apply_bandwidth_ceiling: bool = True,
+) -> list[tuple[int, int, int]]:
+    """Turn the advertised {(w, h): (min_fps, max_fps)} map into the discrete
+    modes a user can pin: every standard rate step inside each resolution's
+    advertised span, plus the span's own ceiling when no step lands on it.
+    Mirrors the rate filter the calibration ladder applies (bandwidth ceiling
+    included) so the picker only offers modes the app would ever attempt.
+    Sorted largest resolution first, fastest rate first."""
+    modes: list[tuple[int, int, int]] = []
+    for (width, height), (low, high) in resolution_fps_ranges.items():
+        if width <= 0 or height <= 0 or high <= 0:
+            continue
+        rates: list[float] = [
+            fps
+            for fps in _FPS_STEP_LADDER
+            if low - _CALIBRATION_FPS_TOLERANCE <= fps <= high + _CALIBRATION_FPS_TOLERANCE
+        ]
+        if not any(abs(high - fps) <= _CALIBRATION_FPS_TOLERANCE for fps in rates):
+            rates.append(high)
+        for fps in rates:
+            if apply_bandwidth_ceiling and width * height * fps * 3 > _BANDWIDTH_CEILING_BYTES_PER_SEC:
+                continue
+            mode = (int(width), int(height), int(round(fps)))
+            if mode[2] > 0 and mode not in modes:
+                modes.append(mode)
+    modes.sort(key=lambda m: (m[0] * m[1], m[2]), reverse=True)
+    return modes
 
 # Freeze detection: a stream is only "frozen" once consecutive downscaled
 # grayscale samples stay near-identical (mean absdiff below threshold) for a
@@ -752,6 +785,9 @@ class FrameSource:
         self.region = settings.get("screen_region")
         self.last_open_error = ""
         self.last_rejected_override: tuple[int, int, int] | None = None
+        # {(w, h): (min_fps, max_fps)} the device advertised at the last open,
+        # so the UI can offer exactly those modes and nothing invented.
+        self.advertised_modes: dict[tuple[int, int], tuple[float, float]] = {}
 
         if self._follow_browser:
             self.mode = "screen"
@@ -761,6 +797,14 @@ class FrameSource:
             if self.region is not None and not isinstance(self.region, dict):
                 x0, y0, x1, y1 = (int(value) for value in self.region[:4])
                 self.region = {"left": x0, "top": y0, "width": max(1, x1 - x0), "height": max(1, y1 - y0)}
+
+    def selectable_modes(self) -> list[tuple[int, int, int]]:
+        """Discrete (w, h, fps) modes the current device advertised, for the
+        MODE picker. A virtual camera serves a fixed rate per size, so no
+        bandwidth filter applies to it."""
+        return selectable_modes_from_ranges(
+            self.advertised_modes, apply_bandwidth_ceiling=not self._is_virtual_camera_device()
+        )
 
     def _is_capture_card_device(self) -> bool:
         if self._is_virtual_camera_device():
@@ -805,6 +849,7 @@ class FrameSource:
             if h > w:
                 continue
             modes[(w, h)] = max(modes.get((w, h), 0.0), fps)
+        self.advertised_modes = {resolution: (fps, fps) for resolution, fps in modes.items()}
 
         requested_area = max(1, requested_width * requested_height)
         candidates = sorted(
@@ -851,6 +896,7 @@ class FrameSource:
             timeout=8.0,
         )
         resolution_fps_ranges = self._parse_device_modes(output) if output.strip() else {}
+        self.advertised_modes = dict(resolution_fps_ranges)
         if not resolution_fps_ranges:
             # Could not enumerate modes: try the requested one directly.
             ladder = [(width, height, float(fallback_fps))]
@@ -1152,6 +1198,11 @@ class FrameSource:
         if self._is_virtual_camera_device() and self._capture_device_name:
             requested_width = int(self.settings.get("capture_width", 2560) or 2560)
             requested_height = int(self.settings.get("capture_height", 1440) or 1440)
+            # A pinned MODE picks the size; the rate is whatever the virtual
+            # camera publishes for that size (it serves one fixed rate).
+            manual_override = self._normalize_resolution_override(self.settings.get("capture_resolution_override"))
+            if manual_override is not None:
+                requested_width, requested_height = manual_override[0], manual_override[1]
             capture = self._open_virtual_camera(self._capture_device_name, requested_width, requested_height)
             # Never fall through to OpenCV here: it would open the *real* card
             # by index and starve the host app the user is recording with.
@@ -1414,39 +1465,38 @@ def _list_directshow_video_names() -> list[str]:
     return names
 
 
+def ffmpeg_on_path() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
 def discover_directshow_devices() -> list[dict[str, str | int]]:
+    """Every DirectShow video device present right now, in enumeration order.
+    Nothing is invented: when ffmpeg finds no device (or is not installed)
+    the single returned entry has an empty name and a label saying why, and
+    the UI shows that instead of a device."""
     device_names = _list_directshow_video_names()
     devices: list[dict[str, str | int]] = []
 
-    if device_names:
-        for index, device_name in enumerate(device_names[:6]):
-            devices.append(
-                {
-                    "label": f"{device_name} (DirectShow {index})",
-                    "name": device_name,
-                    "index": index,
-                    "kind": infer_device_kind(device_name),
-                }
-            )
-    else:
-        for index in range(6):
-            device_name = f"DirectShow {index}"
-            devices.append(
-                {
-                    "label": device_name,
-                    "name": device_name,
-                    "index": index,
-                    "kind": "Input",
-                }
-            )
+    for index, device_name in enumerate(device_names):
+        devices.append(
+            {
+                "label": f"{device_name} (DirectShow {index})",
+                "name": device_name,
+                "index": index,
+                "kind": infer_device_kind(device_name),
+            }
+        )
 
     if not devices:
-        devices.append({"label": "No active DirectShow devices", "name": "", "index": 0, "kind": "Input"})
+        reason = "No video devices found" if ffmpeg_on_path() else "ffmpeg not found on PATH (install it, then RESCAN)"
+        devices.append({"label": reason, "name": "", "index": 0, "kind": "Input"})
 
     return devices
 
 
 def pick_preferred_capture_device(devices: list[dict[str, str | int]]) -> dict[str, str | int] | None:
+    # The "no devices" placeholder has no name and must never be opened.
+    devices = [device for device in devices if str(device.get("name", ""))]
     capture_cards = [device for device in devices if str(device.get("kind", "")).lower() == "capture card"]
     webcams = [device for device in devices if str(device.get("kind", "")).lower() == "webcam"]
 
