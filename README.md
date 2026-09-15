@@ -21,47 +21,80 @@ Repo: https://github.com/SensoredRooster/CheatVision
 
 ---
 
+## Quick start (three steps, no experience needed)
+
+1. Install **Python 3.11 or newer** from https://www.python.org/downloads/ and tick **"Add python.exe to PATH"** in the installer.
+2. Download this repo (green **Code** button → **Download ZIP**, unzip it; or `git clone`). Open the folder and double-click **`setup.bat`**. It builds the app's private Python environment, installs its packages, installs ffmpeg if it is missing, asks whether to fetch the player detector (say Y), and finishes with a checklist that says exactly what is still missing, if anything.
+3. Double-click **`run.bat`**. The app opens on the CheatVision mark and connects to your capture card.
+
+If something is off later, run the checker from the repo folder: `.venv\Scripts\python.exe tools\setup_check.py`. Every line is `[OK]`, `[!!]` (required, with the fix) or `[--]` (optional).
+
+---
+
 ## 0. What you need
 
 | item | notes |
 |---|---|
 | Windows 10/11 PC | the app is Windows-only (DirectShow capture) |
-| Python 3.11 or newer | https://www.python.org/downloads/ — tick **"Add python.exe to PATH"** during install |
-| ffmpeg | https://www.gyan.dev/ffmpeg/builds/ (or `winget install ffmpeg`). Must be on PATH: open a terminal and type `ffmpeg -version` — if it prints a version, you're good |
-| a video source | any capture card Windows can see (AVerMedia, Elgato, Magewell, Razer, generic USB HDMI dongles…) — the app lists **your** hardware under the name Windows gives it. Developed and tested on an AVerMedia Live Gamer 4K (GC573). Or a video file. |
-| optional: NVIDIA/Intel/AMD GPU | makes baseline recording free (hardware encoder). Works without |
+| Python 3.11 or newer | https://www.python.org/downloads/ — tick **"Add python.exe to PATH"** during install. Tested on 3.14 |
+| ffmpeg | `setup.bat` installs it with winget. By hand: `winget install -e --id Gyan.FFmpeg`, or https://www.gyan.dev/ffmpeg/builds/ and add its `bin` folder to PATH. Test in a **new** terminal: `ffmpeg -version` |
+| a video source | a capture card **with its vendor driver installed** (AVerMedia, Elgato, Magewell, Razer, generic USB HDMI dongles… the app lists **your** hardware under the name Windows gives it; developed on an AVerMedia Live Gamer 4K GC573), or another app's virtual camera, or a browser window, or a video file |
+| internet, once | for the Python packages (~300 MB) and the optional player detector (~300 MB more) |
+| optional: NVIDIA/Intel/AMD GPU | makes recording free (hardware encoder). Works without |
+| Git | optional; **Download ZIP** works just as well. Git LFS is **not** needed |
+
+### What is NOT in the download, and where it comes from
+
+A clone or ZIP is **source code only**. These are deliberately not in git, and
+`setup.bat` creates or fetches them. If a fork "doesn't work", it is one of these:
+
+| missing after clone | why it is not in git | how you get it |
+|---|---|---|
+| `.venv\` (the app's Python environment) | it is built for your PC | `setup.bat`, or step 1 below |
+| the Python packages (OpenCV, Qt, ONNX Runtime…) | installed, not shipped | `setup.bat`, or `pip install -r requirements.txt` |
+| `data/models/yolov8n.onnx` (player detector, 13 MB) | model weights are ignored by git: size and the Ultralytics licence. The app runs without it (aim motion only), but snap / sticky / flick rules need player boxes | `setup.bat` → answer **Y**, or `python tools/setup_check.py --get-model` |
+| ffmpeg | a separate program, not a Python package | `setup.bat`, or winget / gyan.dev |
+| your capture card's driver | vendor software | the vendor's site. The card must show up in the Windows **Camera** app before CheatVision can see it |
+| `config/settings.local.json` | your own device / MODE / MASK picks | the app writes it the first time you pick something |
+| `data/incidents`, `data/recordings`, `data/clean`, `logs/` | your own output | created on first run |
 
 ---
 
 ## 1. Install (one time)
 
-Open **PowerShell** in the folder you downloaded/cloned the repo into, then:
+**Easy way:** double-click **`setup.bat`** in the repo folder and follow the prompts. That is all.
+
+**Manual way** (PowerShell in the repo folder), which is exactly what `setup.bat` does:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m venv .venv                       # the app's private Python environment
+.\.venv\Scripts\Activate.ps1               # use it in this terminal
+pip install -r requirements.txt            # what the app needs to run
+winget install -e --id Gyan.FFmpeg         # if `ffmpeg -version` says it is missing; then open a new terminal
+python tools/setup_check.py --get-model    # fetch the player detector (~300 MB once) and print the checklist
 ```
 
-`torch` at the bottom of `requirements.txt` is **only** for retraining a
-classifier — if that line fails or takes forever, delete it; the app does not
-need it to run.
+`requirements.txt` is only what the app needs to run. `requirements-train.txt`
+(torch, ultralytics) is only for fetching the player detector and for
+retraining; the checker installs it when you ask for the model.
 
-### Optional: player detector (YOLO)
-
-Without it, CheatVision still scores aim motion. With it, flags can be
-**confirmed against a player box** (much stronger evidence, fewer false alarms).
+### The checker
 
 ```powershell
-pip install ultralytics
-python tools/export_player_model.py
+python tools/setup_check.py
 ```
 
-That writes `data/models/yolov8n.onnx`. Done once.
+prints one line per item — Windows, Python, environment, packages, ffmpeg,
+capture devices Windows can see, player detector, settings, folders — as
+`[OK]`, `[!!]` (required, with the exact fix) or `[--]` (optional). It runs on
+a bare Python install, so it works even before anything else is set up. If it
+ends with **READY**, the app will start.
 
 ---
 
 ## 2. Start the app
+
+Double-click **`run.bat`**, or in PowerShell:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1      # only if you opened a new terminal
@@ -280,6 +313,26 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
   compact pipe format — not supported yet. Your card's numbers will differ:
   the MODE picker lists what it advertises, FEED shows what it delivers.
 
+### What the pipeline actually runs at (nothing is "built for 1080/60")
+
+| stage | size | rate |
+|---|---|---|
+| capture into the app | native, up to 2560 wide; a 4K signal is scaled to 2560 wide inside ffmpeg before it reaches the app | whatever the card delivers, within a ~1.7 GB/s raw-pipe budget: **1440p @ 144**, **1080p @ 240** and **4K @ 60** fit; **1440p @ 240** and 4K above 60 do not (yet) |
+| aim analysis | 960×540 — a fixed *fraction* of the screen, so 1440p and 4K measure the same angles; the motion estimate is sub-pixel (≈0.02° at a 100° field of view) | ~20 samples/s by design (§7 ANALYSIS); `analysis_rate_hz` raises it, thresholds follow |
+| player detector (YOLO) | the 960×540 frame letterboxed into 640×640, i.e. 640×360 of actual picture | ≤ 30/s when on |
+| on-screen preview | fits the canvas | ≤ 240/s, newest frame only |
+| evidence clips | 960×540 | feed rate |
+| session / baseline recordings | preview size (≤ 2560 wide) | unique-picture rate |
+
+Feed it anything: the source's resolution and refresh rate never limit the
+maths, and a 4K source is not "wasted", it just downsamples more cleanly. The
+two real limits today are the raw-pipe budget for **1440p @ 240 and 4K above
+60** (the fix is to scale inside ffmpeg for those modes, or a compact pipe
+format), and the detector's **640×360 effective input**, which loses players
+smaller than about 20 px, so the snap / sticky rules work at close and mid
+range only (the fix is to detect on a native-resolution crop around the
+reticle, which is where those rules look anyway).
+
 ---
 
 ## 8. Warnings you may see, and what to do
@@ -296,6 +349,10 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
 | `No video devices found` in the SOURCE selector | Windows has no DirectShow video device right now | plug the card in / install its driver, press **RESCAN** |
 | `ffmpeg not found on PATH` in the SOURCE selector | ffmpeg is missing (§0) | install it, open a new terminal, press **RESCAN** |
 | card refuses to open with *nothing* else running | an earlier ffmpeg got killed mid-stream and wedged the driver (older builds did this) | reboot once. Current builds stop ffmpeg gracefully and can't cause it |
+| `'python' is not recognized` when running commands | Python is not installed, or was installed without "Add to PATH" | reinstall Python and tick **Add python.exe to PATH**; or run `setup.bat`, which also tries the `py` launcher |
+| `No module named 'cv2'` / `'PySide6'` / `'onnxruntime'` | the packages are not installed, or you are running the system Python instead of `.venv` | double-click `run.bat` (it uses `.venv`), or `setup.bat` to install; check with `python tools/setup_check.py` |
+| console says `YOLO MODEL ABSENT` / YOLO row never turns ON, no player boxes | the player detector was never fetched (it is not in the download) | `python tools/setup_check.py --get-model` |
+| SOURCE lists your webcam but not your capture card | the card's vendor driver is not installed, or another app holds the card | install the driver, confirm the card appears in the Windows **Camera** app, press **RESCAN** |
 
 The console window (where you ran `python main.py`) prints the same events with
 more detail, e.g. `[CAPTURE] [CALIBRATE] …`, `[EXPORT] baseline saved …`.
@@ -374,13 +431,19 @@ CLEAN**. Zero dropped frames at 1440p in testing; ~90 MB of memory.
 
 ## 12. Testing that everything works
 
+First the environment, then the code:
+
 ```powershell
-python -m unittest discover -s tests -v
+python tools/setup_check.py                 # every line [OK] or [--] means the app can run
+python -m unittest discover -s tests -v     # the code itself
 ```
 
-27 tests: scene gate, aim tracker, coordinate scaling, game profiles, and
+89 tests: scene gate, aim tracker, coordinate scaling, game profiles,
 full-pipeline recall (a human flick must **not** flag; a ruler-straight pan, a
-tremor-free lock on a curving target, and a one-frame snap onto a head **must**).
+tremor-free lock on a curving target, and a one-frame snap onto a head
+**must**), capture-mode ladder and device parsing, device naming, session
+recording, analysis cadence (60 / 144 / 240 fps scored alike), branding
+assets and palette, the SOURCE / MASK pickers, and the setup checker itself.
 
 To score the detector on your own footage:
 
@@ -403,7 +466,7 @@ The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
 ## 13. Everyday checklist
 
 1. Plug in / power the source. Start OBS / Streaming Center **before** CheatVision if you want to record.
-2. `python main.py`.
+2. Double-click `run.bat` (or `python main.py` inside `.venv`).
 3. SOURCE → pick your capture card, or its `… VCam` entry if you're recording. MASK `GAME`.
 4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows as many new pictures as your HDMI signal carries (60 on a 60 Hz signal, 144 on 144), ANALYSIS about 20 Hz.
 5. Play. Watch INCIDENTS. Double-check anything flagged by eye.
@@ -588,6 +651,8 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | path | role |
 |---|---|
 | `main.py` | entry |
+| `setup.bat` / `run.bat` | one-click install (venv, packages, ffmpeg, optional detector, checker) / one-click start |
+| `requirements.txt` / `requirements-train.txt` | what the app needs to run / extras for fetching the detector and retraining |
 | `src/app.py` | Qt bootstrap, OpenCV thread cap, crash log |
 | `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, virtual cameras, freeze, graceful ffmpeg lifecycle + job object |
 | `src/core/scene_gate.py` | Live/Held hysteresis |
@@ -604,5 +669,5 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | `src/ui/control_bar.py`, `left_rail.py`, `video_canvas.py`, `incident_queue.py`, `playback_controls.py` | widgets |
 | `src/ui/theme.py`, `src/ui/branding.py` | palette + stylesheet, brand-asset loader and brand type (see `assets/brand/BRAND.md`) |
 | `assets/brand/` | the crosshair mark (`cheatvision_mark.png`, `cheatvision.ico`) and `BRAND.md` |
-| `tools/` | `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py`, `probe_capture_rate.py` (delivered/unique fps per pixel format) |
-| `tests/` | 82 unit tests |
+| `tools/` | `setup_check.py` (what is missing and how to fix it; `--get-model`), `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py`, `probe_capture_rate.py` (delivered/unique fps per pixel format) |
+| `tests/` | 89 unit tests |

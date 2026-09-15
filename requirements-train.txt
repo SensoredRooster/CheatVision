@@ -1,0 +1,7 @@
+# Only for fetching the YOLO player detector (tools/export_player_model.py,
+# or tools/setup_check.py --get-model) and for retraining the optional
+# classifier. About 300 MB. The app itself does not import any of these.
+#   pip install -r requirements-train.txt
+torch>=2.5.0
+ultralytics>=8.3.0
+onnx>=1.16.0
