@@ -14,7 +14,7 @@ The mark keeps its light outer rim: on the app's charcoal it reads as a glow,
 on white it disappears. Give it clear space of at least a quarter of its width
 and never recolour it. The wordmark is set in type beside the mark, CHEAT in
 white and VISION in brand red, because the wordmark layer in the supplied
-artwork was not recoverable (its alpha never exceeds 71 of 255).
+artwork was not recoverable (its alpha never exceeds 71 of 255). No tagline.
 
 ## Palette
 

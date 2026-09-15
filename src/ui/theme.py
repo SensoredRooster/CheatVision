@@ -167,10 +167,6 @@ QLabel#RailBrand {{
     color: {TEXT_PRIMARY};
 }}
 
-QLabel#RailBrandSub {{
-    color: {ACCENT};
-}}
-
 QFrame#RailCard {{
     background-color: {PANEL_ALT};
     border: 1px solid {HAIRLINE};

@@ -21,7 +21,6 @@ ICON_PATH = BRAND_DIR / "cheatvision.ico"
 # echo the red letters on the charcoal disc.
 WORDMARK_LEFT = "CHEAT"
 WORDMARK_RIGHT = "VISION"
-TAGLINE = "AIM REVIEW CONSOLE"
 
 
 @lru_cache(maxsize=1)

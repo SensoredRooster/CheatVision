@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.branding import TAGLINE, WORDMARK_LEFT, WORDMARK_RIGHT, brand_font, brand_pixmap
+from src.ui.branding import WORDMARK_LEFT, WORDMARK_RIGHT, brand_font, brand_pixmap
 from src.ui.incident_queue import IncidentQueueTable
 from src.ui.theme import ACCENT, ALERT, HAIRLINE, PANEL, TEXT_PRIMARY, TRACE, WARNING
 
@@ -214,7 +214,7 @@ class LeftRail(QWidget):
         root.setSpacing(10)
 
         # Brand lockup: the crosshair mark beside the wordmark (CHEAT white,
-        # VISION red, echoing the letters on the disc), tagline under it.
+        # VISION red, echoing the letters on the disc).
         lockup = QWidget()
         lockup_layout = QHBoxLayout(lockup)
         lockup_layout.setContentsMargins(0, 2, 0, 0)
@@ -228,10 +228,6 @@ class LeftRail(QWidget):
         if not pixmap.isNull():
             mark.setPixmap(pixmap)
         lockup_layout.addWidget(mark, 0)
-        words = QWidget()
-        words_layout = QVBoxLayout(words)
-        words_layout.setContentsMargins(0, 0, 0, 0)
-        words_layout.setSpacing(0)
         brand = QLabel(
             f'<span style="color:{TEXT_PRIMARY}">{WORDMARK_LEFT}</span>'
             f'<span style="color:{ACCENT}">{WORDMARK_RIGHT}</span>'
@@ -240,13 +236,7 @@ class LeftRail(QWidget):
         brand.setTextFormat(Qt.RichText)
         brand.setFont(brand_font(17, 3.5))
         brand.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        tagline = QLabel(TAGLINE)
-        tagline.setObjectName("RailBrandSub")
-        tagline.setFont(brand_font(8, 2.5, QFont.Weight.Bold))
-        tagline.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        words_layout.addWidget(brand)
-        words_layout.addWidget(tagline)
-        lockup_layout.addWidget(words, 0)
+        lockup_layout.addWidget(brand, 0)
         lockup_layout.addStretch(1)
         root.addWidget(lockup)
 
