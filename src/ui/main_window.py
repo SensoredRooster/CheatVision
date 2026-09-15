@@ -72,9 +72,12 @@ class MainWindow(QMainWindow):
             dataset_exporter=self.dataset_exporter,
             target_resolution=target_resolution,
             player_detector_model_path=str(settings.get("player_detector_model_path", "data/models/yolov8n.onnx")),
-            detection_confidence_threshold=float(settings.get("detection_confidence_threshold", 0.45)),
+            detection_confidence_threshold=float(settings.get("detection_confidence_threshold", 0.35)),
             detection_nms_threshold=float(settings.get("detection_nms_threshold", 0.45)),
             detection_player_class_ids=settings.get("detection_player_class_ids", []),
+            detection_input_size=int(settings.get("detection_input_size", 0) or 0) or None,
+            detection_provider=str(settings.get("detection_provider", "auto") or "auto"),
+            detection_threads=int(settings.get("detection_threads", 0) or 0) or None,
             detection_corroboration_margin_px=int(settings.get("detection_corroboration_margin_px", 12)),
             facecam_roi=facecam_roi,
             source_profile=str(settings.get("source_profile", "hdmi_game")),
@@ -777,7 +780,9 @@ class MainWindow(QMainWindow):
         except Exception:
             tracks = 0
         gate = self.pipeline.gate_reason()
-        self.left_rail.set_detect(yolo_on=yolo_on, tracks=tracks, gate=gate)
+        self.left_rail.set_detect(
+            yolo_on=yolo_on, tracks=tracks, gate=gate, detector=self.pipeline.player_detector.describe()
+        )
         ignore_count = int(telemetry.get("ignore_rect_count") or getattr(self.pipeline, "ignore_rect_count", 0) or 0)
         baseline = "rec" if self.dataset_exporter.is_recording_baseline else "idle"
         self.left_rail.set_profile(self.pipeline.source_profile, ignore_count, baseline)

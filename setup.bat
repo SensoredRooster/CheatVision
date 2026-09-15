@@ -55,7 +55,18 @@ if errorlevel 1 (
   echo      When setup finishes, close this window and double-click run.bat.
 )
 
-rem ---- 5. Player detector ------------------------------------------------------
+rem ---- 5. GPU for the detector --------------------------------------------------
+echo.
+echo  The player detector can run on your graphics card through DirectML.
+echo  Any DirectX 12 GPU works. On the development PC it is 3 to 8x faster than the CPU.
+set "GPU=Y"
+set /p "GPU=Run the player detector on the graphics card? [Y/n] "
+if /i not "%GPU%"=="N" (
+  "%VPY%" -m pip uninstall -y onnxruntime >nul 2>nul
+  "%VPY%" -m pip install onnxruntime-directml
+)
+
+rem ---- 6. Player detector ------------------------------------------------------
 echo.
 echo  The player detector lets flags be confirmed against a player box.
 echo  It downloads about 300 MB once. The app runs without it, aim motion only.

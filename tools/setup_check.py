@@ -215,10 +215,38 @@ def check_devices() -> Check:
     return Check("Capture devices", True, "; ".join(labelled), required=False)
 
 
+def _describe_model(path: Path) -> str:
+    """Input size and where it will run, plus hints; empty if onnxruntime is missing."""
+    try:
+        import onnxruntime as ort  # runtime package, may not be installed yet
+
+        session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        shape = session.get_inputs()[0].shape
+        fixed = len(shape) == 4 and isinstance(shape[2], int) and isinstance(shape[3], int)
+        size = f"{shape[3]}x{shape[2]}" if fixed else "dynamic"
+        gpu = "DmlExecutionProvider" in ort.get_available_providers()
+        text = f", input {size}, runs on {'the GPU (DirectML)' if gpu else 'the CPU'}"
+        hints = []
+        if fixed and int(shape[2]) < 960:
+            hints.append("re-export at 960 to catch distant players: python tools/export_player_model.py")
+        if not gpu:
+            hints.append("GPU inference: pip uninstall -y onnxruntime && pip install onnxruntime-directml")
+        if hints:
+            text += ". Optional: " + "; ".join(hints)
+        return text
+    except Exception:
+        return ""
+
+
 def check_model() -> Check:
     path = model_path()
     if path.is_file() and path.stat().st_size >= MIN_MODEL_BYTES:
-        return Check("Player detector", True, f"{path} ({path.stat().st_size // 1_000_000} MB)", required=False)
+        return Check(
+            "Player detector",
+            True,
+            f"{path} ({path.stat().st_size // 1_000_000} MB){_describe_model(path)}",
+            required=False,
+        )
     detail = "missing" if not path.is_file() else f"file is too small to be a model ({path.stat().st_size} bytes)"
     return Check(
         "Player detector",

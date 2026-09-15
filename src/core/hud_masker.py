@@ -53,6 +53,28 @@ def scale_point(
     return int(round(x * tw / fw)), int(round(y * th / fh))
 
 
+def box_coverage(
+    box: tuple[int, int, int, int],
+    fracs: Sequence[Frac],
+    width: int,
+    height: int,
+) -> float:
+    """Fraction of a pixel box's area that lies inside the given fractional
+    screen regions: 0.0 = clear of them, 1.0 = entirely inside."""
+    x1, y1, x2, y2 = (float(v) for v in box)
+    area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if area <= 0.0 or width <= 0 or height <= 0:
+        return 0.0
+    covered = 0.0
+    for fx0, fy0, fx1, fy1 in fracs:
+        rx0, ry0, rx1, ry1 = fx0 * width, fy0 * height, fx1 * width, fy1 * height
+        overlap_w = min(x2, rx1) - max(x1, rx0)
+        overlap_h = min(y2, ry1) - max(y1, ry0)
+        if overlap_w > 0.0 and overlap_h > 0.0:
+            covered += overlap_w * overlap_h
+    return min(1.0, covered / area)
+
+
 def scale_bbox(
     bbox: tuple[int, int, int, int],
     from_size: tuple[int, int],
@@ -199,6 +221,19 @@ class HUDMasker:
                 return frame
             return cv2.bitwise_and(frame, frame, mask=self.mask)
 
+    # A detection is HUD art (squad portrait, minimap icon) only when most of
+    # its box lies inside HUD regions. Testing the box *centre* threw away
+    # every enemy standing half behind the minimap or the squad list.
+    COVERAGE_TO_EXCLUDE = 0.6
+    # The player's own weapon and arms are drawn up from the bottom edge, so a
+    # "person" box on them touches the bottom of the screen and stays inside
+    # the lower band of the viewmodel zone. Wide animations (pistol, melee,
+    # reloads) throw the hands far left and right of the zone's x-range, so
+    # only the band's top edge is enforced. A close enemy standing low on the
+    # screen reaches above the band; a far one never touches the bottom edge.
+    VIEWMODEL_BOTTOM_FRAC = 0.95
+    VIEWMODEL_MARGIN_FRAC = 0.05
+
     def overlaps_masked_region(
         self,
         x1: int,
@@ -208,8 +243,9 @@ class HUDMasker:
         width: int | None = None,
         height: int | None = None,
     ) -> bool:
-        """True if the bbox *center* sits inside a HUD fraction."""
-        return self._center_in_fracs(x1, y1, x2, y2, self.hud_mask_frac, width, height)
+        """True when at least COVERAGE_TO_EXCLUDE of the box's area lies inside
+        the profile's HUD fractions."""
+        return self.coverage_in_fracs(x1, y1, x2, y2, self.hud_mask_frac, width, height) >= self.COVERAGE_TO_EXCLUDE
 
     def is_viewmodel_detection(
         self,
@@ -220,10 +256,22 @@ class HUDMasker:
         width: int | None = None,
         height: int | None = None,
     ) -> bool:
-        """True if the bbox centre sits where the player's own weapon is drawn."""
-        return self._center_in_fracs(x1, y1, x2, y2, self.detection_ignore_frac, width, height)
+        """True when the box is the player's own weapon or arms: it touches the
+        bottom edge and lies entirely below the top of a detection-ignore
+        zone (with a small margin), at any x. The old centre test discarded
+        real enemies whose box merely extended down into the zone, while a
+        zone-x test let wide-spread hands through as "players"."""
+        frame_w = int(width) if width is not None else self.width
+        frame_h = int(height) if height is not None else self.height
+        if frame_w <= 0 or frame_h <= 0:
+            return False
+        ny1, ny2 = float(y1) / frame_h, float(y2) / frame_h
+        if ny2 < self.VIEWMODEL_BOTTOM_FRAC:
+            return False
+        margin = self.VIEWMODEL_MARGIN_FRAC
+        return any(ny1 >= fy0 - margin for _fx0, fy0, _fx1, _fy1 in self.detection_ignore_frac)
 
-    def _center_in_fracs(
+    def coverage_in_fracs(
         self,
         x1: int,
         y1: int,
@@ -232,19 +280,14 @@ class HUDMasker:
         fracs: Sequence[Frac],
         width: int | None,
         height: int | None,
-    ) -> bool:
+    ) -> float:
+        """Share of the box's area covered by `fracs` (sum of intersections,
+        clipped to 1.0; the regions in a profile do not overlap much)."""
         frame_w = int(width) if width is not None else self.width
         frame_h = int(height) if height is not None else self.height
         if frame_w <= 0 or frame_h <= 0:
-            return False
-        cx = (float(x1) + float(x2)) * 0.5
-        cy = (float(y1) + float(y2)) * 0.5
-        nx = cx / frame_w
-        ny = cy / frame_h
-        for fx0, fy0, fx1, fy1 in fracs:
-            if fx0 <= nx <= fx1 and fy0 <= ny <= fy1:
-                return True
-        return False
+            return 0.0
+        return box_coverage((x1, y1, x2, y2), fracs, frame_w, frame_h)
 
     def set_target_resolution(self, width: int, height: int) -> None:
         with self._lock:

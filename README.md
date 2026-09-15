@@ -165,10 +165,10 @@ status text at the top.)
 
 | row | meaning |
 |---|---|
-| YOLO | `ON`/`OFF`. On automatically for VODs; off for live HDMI unless you tick **ANALYZE LIVE** |
+| YOLO | `OFF`, or `ON · 960 GPU` / `ON · 640 CPU`: the detector's input size and where it runs. On automatically for VODs; off for live HDMI unless you tick **ANALYZE LIVE** |
 | TRACKS | player boxes currently tracked |
 | GATE | `live` = analysing. Anything else (`black`, `no_hud`, `letterbox`, `frozen`) = the analyser is deliberately idle (menus, loading screens, no signal). Normal. |
-| **ANALYZE LIVE** | run the YOLO player detector on the live feed too (costs ~4 CPU cores; makes flags target-confirmed) |
+| **ANALYZE LIVE** | run the YOLO player detector on the live feed too (a few ms per pass on a GPU, a few CPU cores otherwise; makes flags target-confirmed) |
 
 ### SIGNAL card
 
@@ -247,7 +247,7 @@ not gameplay*. They are separate pickers, so every input is listed once.
 
 | MASK | pick it when | ignores |
 |---|---|---|
-| `GAME` | the feed is the game itself (card or virtual camera straight from the gaming PC) | facecam corner (bottom-right by default), player's own weapon |
+| `GAME` | the feed is the game itself (card or virtual camera straight from the gaming PC) | the game's HUD (per game profile) and the player's own weapon — detections only; nothing else, a bare game feed has no facecam |
 | `STREAM` | the feed is a stream page: Browser window, a recorded stream, or a card/virtual camera carrying a browser | top and bottom stream chrome, chat column on the right, facecam |
 
 MASK applies immediately with no capture restart. **Browser window** forces
@@ -319,19 +319,57 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
 |---|---|---|
 | capture into the app | native, up to 2560 wide; a 4K signal is scaled to 2560 wide inside ffmpeg before it reaches the app | whatever the card delivers, within a ~1.7 GB/s raw-pipe budget: **1440p @ 144**, **1080p @ 240** and **4K @ 60** fit; **1440p @ 240** and 4K above 60 do not (yet) |
 | aim analysis | 960×540 — a fixed *fraction* of the screen, so 1440p and 4K measure the same angles; the motion estimate is sub-pixel (≈0.02° at a 100° field of view) | ~20 samples/s by design (§7 ANALYSIS); `analysis_rate_hz` raises it, thresholds follow |
-| player detector (YOLO) | the 960×540 frame letterboxed into 640×640, i.e. 640×360 of actual picture | ≤ 30/s when on |
+| player detector (YOLO) | the 960×540 frame letterboxed into the model's input: **960** (default export, full analysis resolution) or 640 (640×360 of actual picture) | ≤ 30/s when on; end to end ~27 ms a frame on a GPU, ~90 ms on a CPU at 960 |
 | on-screen preview | fits the canvas | ≤ 240/s, newest frame only |
 | evidence clips | 960×540 | feed rate |
 | session / baseline recordings | preview size (≤ 2560 wide) | unique-picture rate |
 
 Feed it anything: the source's resolution and refresh rate never limit the
 maths, and a 4K source is not "wasted", it just downsamples more cleanly. The
-two real limits today are the raw-pipe budget for **1440p @ 240 and 4K above
+one real limit today is the raw-pipe budget for **1440p @ 240 and 4K above
 60** (the fix is to scale inside ffmpeg for those modes, or a compact pipe
-format), and the detector's **640×360 effective input**, which loses players
-smaller than about 20 px, so the snap / sticky rules work at close and mid
-range only (the fix is to detect on a native-resolution crop around the
-reticle, which is where those rules look anyway).
+format). The detector used to be the other one; see the next section.
+
+### Making the player detector stronger
+
+Three things decide whether a player gets a box, in this order of impact:
+
+1. **The filters behind YOLO.** YOLO always looked at the whole frame, but
+   until September 2026 the filters after it threw a detection away whenever
+   its *centre* fell in an ignore zone: a facecam box applied even to bare
+   game feeds (the right-middle of the screen), the whole low centre (the
+   weapon zone), and every HUD corner. Measured: **48 % of a GAME feed was
+   dead**, and the bottom-centre third survived at 0 %. Now a box is dropped
+   only when *most of it* lies inside HUD art, when it hugs the bottom edge
+   inside the weapon band (the player's own arms, at any x), or under STREAM
+   masks when it is the streamer's facecam. A player-sized box survives in
+   the whole right-middle and low centre.
+2. **Input size.** The app hands the detector a 960×540 frame. A 640 model
+   shrinks that to 640×360 and loses anyone under ~20 px; a 960 model sees it
+   at full resolution. On real footage the 960 model boxed a mid-distance
+   operator in most frames the 640 model missed. `tools/export_player_model.py`
+   now exports at 960 by default; re-run it once to upgrade an old 640 model
+   (the checker tells you if yours is 640).
+3. **Where it runs.** With `onnxruntime-directml` installed the model runs on
+   any DirectX 12 graphics card: the model pass takes **3.8 ms** at 640 and
+   **8.1 ms** at 960 on the development PC, against 29 / 67 ms on its CPU;
+   end to end with letterboxing, decoding and filtering that is 14 / 27 ms
+   against 39 / 91 ms (the decode step was also vectorised: it used to loop
+   over 18,900 candidates in Python and cost more than the GPU pass). `setup.bat`
+   offers this; by hand: `pip uninstall -y onnxruntime` then
+   `pip install onnxruntime-directml`. `detection_provider` is `auto` (GPU
+   when present, else CPU); a forced GPU that fails to open falls back to
+   the CPU. On the CPU the thread pool is now half the machine (2 to 8).
+
+Also measured on the same footage: the confidence floor moved from 0.45 to
+**0.35**, which roughly doubled the frames with a box on a known player while
+adding no false boxes that the filters above did not already remove. The
+remaining false positives seen were the player's own arms and the operator
+portrait in the bottom-right HUD; both are filtered. The detector is still a
+generic COCO "person" model that has never seen Warzone; a game-tuned model is
+the next real step, and the fastest structural gain after that is to detect
+on a native-resolution crop around the reticle, where the snap / sticky rules
+look anyway.
 
 ---
 
@@ -420,7 +458,10 @@ CLEAN**. Zero dropped frames at 1440p in testing; ~90 MB of memory.
 | `detection_fps` | how often YOLO runs (default 30) |
 | `analysis_rate_hz` | analysed aim samples a second to aim for (default 20, the cadence the rules were tuned at); the stride follows the feed's real rate (§7) |
 | `analysis_stride` | starting stride (default 3); adapts automatically once the feed rate is known |
-| `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds |
+| `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds (default 0.35 / 0.45; see §7 "Making the player detector stronger") |
+| `detection_provider` | `auto` (GPU via DirectML when `onnxruntime-directml` is installed, else CPU), `cpu`, or `directml` |
+| `detection_threads` | CPU threads for the detector; `0` = half the machine, between 2 and 8 |
+| `detection_input_size` | only for a dynamic-shape model export; a fixed export dictates its own size (default export is 960) |
 | `detection_player_class_ids` | `[0]` = COCO "person" |
 | `facecam_roi` | `[]` = default bottom-right box; or `[x0, y0, x1, y1]` as fractions or pixels |
 | `stream_chat_ignore` | ignore the right-hand chat column on stream/VOD profiles |
@@ -510,7 +551,7 @@ about what gets flagged.
 - **PlaybackWorker** — VOD. `cv2.CAP_FFMPEG` first. Clamps reported FPS to
   12–480 (else 30). Absolute-schedule pacing (no drift/catch-up bursts).
 - **AnalysisWorker** — `AntiCheatPipeline.process_frame`; telemetry throttled.
-- **DetectionWorker** — YOLO via ONNX Runtime (4 intra-op threads). Idles when
+- **DetectionWorker** — YOLO via ONNX Runtime (DirectML GPU when installed, else CPU with half the cores, 2 to 8). Idles when
   disabled.
 - **RenderWorker** — builds the display frame off the UI thread; the UI blits.
 - **MainWindow** — composition root; never blocks on capture or analysis.

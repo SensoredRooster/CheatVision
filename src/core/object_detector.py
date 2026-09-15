@@ -10,20 +10,47 @@ import onnxruntime as ort
 # Inference shares the machine with the capture reader, renderer, analysis
 # worker, ffmpeg and the UI thread. ORT's default (one intra-op thread per
 # physical core) saturates every core during each detection pass, which shows
-# up as stutter in the live picture; a small fixed pool keeps detection fast
-# enough at 30fps without starving the video path.
-_ORT_INTRA_OP_THREADS = 4
+# up as stutter in the live picture. The CPU pool therefore takes about half
+# the logical cores minus a margin, and never more than 8 (measured: 960
+# input 79 ms/pass at 4 threads, 63 ms at 8 on a 20-thread desktop).
+_MIN_THREADS = 2
+_MAX_THREADS = 8
+# With onnxruntime-directml installed the model runs on any DirectX 12 GPU:
+# measured 3.8 ms/pass at 640 and 8.1 ms at 960 on the development machine,
+# against 29 / 67 ms on its CPU. "auto" uses it when present, else the CPU.
+_DML_PROVIDER = "DmlExecutionProvider"
+_CPU_PROVIDER = "CPUExecutionProvider"
+
+
+def auto_threads(cpu_count: int | None) -> int:
+    cores = int(cpu_count or 4)
+    return max(_MIN_THREADS, min(_MAX_THREADS, cores // 2 - 2))
 
 
 class PixelVisionObjectDetector:
     def __init__(
         self,
         model_path: str = "data/models/yolov8n.onnx",
-        conf_threshold: float = 0.45,
+        conf_threshold: float = 0.35,
         nms_threshold: float = 0.45,
         player_class_ids: list[int] | None = None,
+        input_size: int | None = None,
+        provider: str = "auto",
+        threads: int | None = None,
     ):
         self.model_path = self._resolve_model_path(model_path)
+        # "auto": GPU (DirectML) when onnxruntime-directml is installed, else
+        # CPU. "cpu" / "directml" force one; a forced GPU that fails to open
+        # falls back to the CPU with a warning rather than losing detection.
+        self.provider_pref = str(provider or "auto").strip().lower()
+        self.threads = int(threads) if threads else auto_threads(os.cpu_count())
+        self.provider_name = ""
+        # Letterbox size. A model exported with a fixed input (the normal
+        # case) dictates it; `input_size` only matters for a dynamic-shape
+        # export. Exporting at 960 instead of 640 (tools/export_player_model.py
+        # --imgsz 960) keeps distant players above the detector's size floor
+        # at ~2.3x the CPU cost per pass.
+        self.input_w = self.input_h = int(input_size or 640)
         self.conf_threshold = conf_threshold
         self.nms_threshold = nms_threshold
         self.player_class_ids = player_class_ids if player_class_ids is not None else []
@@ -55,30 +82,68 @@ class PixelVisionObjectDetector:
                 return path
         return model_path
 
-    def _load_onnx_model(self) -> None:
-        try:
-            session_options = ort.SessionOptions()
-            session_options.intra_op_num_threads = _ORT_INTRA_OP_THREADS
-            session_options.inter_op_num_threads = 1
-            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            self.ort_session = ort.InferenceSession(
-                self.model_path,
-                sess_options=session_options,
-                providers=["CPUExecutionProvider"],
-            )
-            output_shape = self.ort_session.get_outputs()[0].shape
-            if len(output_shape) != 3:
-                raise ValueError(
-                    f"Expected rank-3 YOLO output, got rank {len(output_shape)} "
-                    f"(shape {output_shape}). Wrong model file?"
-                )
-            print(f"[DETECTOR] [SUCCESS] Target bounding box detector model loaded: {self.model_path}")
-        except Exception as exc:
+    def _provider_order(self) -> list[str]:
+        available = set(ort.get_available_providers())
+        wants_gpu = self.provider_pref in ("auto", "directml", "dml", "gpu")
+        order: list[str] = []
+        if wants_gpu and _DML_PROVIDER in available:
+            order.append(_DML_PROVIDER)
+        elif wants_gpu and self.provider_pref != "auto":
             print(
-                f"[DETECTOR] [WARN] Object detection model absent at {self.model_path}. "
-                f"Simulating fallback tracker. ({exc})"
+                "[DETECTOR] [WARN] DirectML requested but onnxruntime-directml is not installed "
+                "(pip uninstall -y onnxruntime && pip install onnxruntime-directml); using the CPU."
             )
-            self.ort_session = None
+        order.append(_CPU_PROVIDER)
+        return order
+
+    def describe(self) -> str:
+        """Short label for the UI, e.g. '960 GPU' or '640 CPU'; empty without a model."""
+        if self.ort_session is None:
+            return ""
+        return f"{self.input_w} {self.provider_name}"
+
+    def _load_onnx_model(self) -> None:
+        last_error: Exception | None = None
+        for provider in self._provider_order():
+            try:
+                session_options = ort.SessionOptions()
+                session_options.inter_op_num_threads = 1
+                session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                if provider == _DML_PROVIDER:
+                    # Required by the DirectML execution provider.
+                    session_options.enable_mem_pattern = False
+                    providers = [_DML_PROVIDER, _CPU_PROVIDER]
+                else:
+                    session_options.intra_op_num_threads = self.threads
+                    providers = [_CPU_PROVIDER]
+                session = ort.InferenceSession(self.model_path, sess_options=session_options, providers=providers)
+                output_shape = session.get_outputs()[0].shape
+                if len(output_shape) != 3:
+                    raise ValueError(
+                        f"Expected rank-3 YOLO output, got rank {len(output_shape)} "
+                        f"(shape {output_shape}). Wrong model file?"
+                    )
+                input_shape = session.get_inputs()[0].shape
+                if len(input_shape) == 4 and isinstance(input_shape[2], int) and isinstance(input_shape[3], int):
+                    self.input_h, self.input_w = int(input_shape[2]), int(input_shape[3])
+                self.ort_session = session
+                self.provider_name = "GPU" if provider == _DML_PROVIDER else "CPU"
+                print(
+                    f"[DETECTOR] [SUCCESS] Target bounding box detector model loaded: {self.model_path} "
+                    f"(input {self.input_w}x{self.input_h}, {self.provider_name}"
+                    f"{'' if self.provider_name == 'GPU' else f', {self.threads} threads'})"
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if provider != _CPU_PROVIDER:
+                    print(f"[DETECTOR] [WARN] {provider} could not open the model ({exc}); trying the CPU.")
+        print(
+            f"[DETECTOR] [WARN] Object detection model absent at {self.model_path}. "
+            f"Simulating fallback tracker. ({last_error})"
+        )
+        self.ort_session = None
+        self.provider_name = ""
 
     def _detect_output_layout(self, predictions: np.ndarray) -> str:
         if predictions.ndim != 3 or predictions.shape[0] != 1:
@@ -89,56 +154,52 @@ class PixelVisionObjectDetector:
         else:
             return "yolov8"
 
-    def _decode_predictions(self, predictions: np.ndarray) -> list[tuple[int, int, int, int, float, int]]:
+    def _decode_predictions(self, predictions: np.ndarray) -> list[tuple[float, float, float, float, float, int]]:
+        """Candidate boxes above the confidence floor for the wanted classes.
+
+        Vectorised: a 960 model emits 18,900 candidates per frame and the
+        old per-row Python loop cost ~55 ms, more than the GPU pass itself.
+        """
         layout = self._detect_output_layout(predictions)
-        detections: list[tuple[int, int, int, int, float, int]] = []
+        if layout == "unknown" or not self.player_class_ids:
+            return []
 
         if layout == "yolov5":
-            for pred in predictions[0]:
-                if len(pred) < 6:
-                    continue
-                obj_conf = float(pred[4])
-                class_scores = pred[5:]
-                class_id = int(np.argmax(class_scores))
-                confidence = obj_conf * float(class_scores[class_id])
-                if confidence <= self.conf_threshold:
-                    continue
-                if class_id not in self.player_class_ids:
-                    continue
+            rows = np.asarray(predictions[0], dtype=np.float32)
+            if rows.shape[1] < 6:
+                return []
+            class_scores = rows[:, 5:]
+            class_ids = class_scores.argmax(axis=1)
+            confidence = rows[:, 4] * class_scores[np.arange(rows.shape[0]), class_ids]
+        else:
+            rows = np.asarray(predictions[0], dtype=np.float32).T
+            if rows.shape[1] < 5:
+                return []
+            class_scores = rows[:, 4:]
+            class_ids = class_scores.argmax(axis=1)
+            confidence = class_scores[np.arange(rows.shape[0]), class_ids]
 
-                x_center, y_center = float(pred[0]), float(pred[1])
-                box_w, box_h = float(pred[2]), float(pred[3])
-                detections.append((x_center, y_center, box_w, box_h, confidence, class_id))
-
-        elif layout == "yolov8":
-            pred_t = predictions[0].transpose()
-            for pred in pred_t:
-                if len(pred) < 5:
-                    continue
-                x_center, y_center, box_w, box_h = float(pred[0]), float(pred[1]), float(pred[2]), float(pred[3])
-                class_scores = pred[4:]
-                class_id = int(np.argmax(class_scores))
-                confidence = float(class_scores[class_id])
-                if confidence <= self.conf_threshold:
-                    continue
-                if class_id not in self.player_class_ids:
-                    continue
-
-                detections.append((x_center, y_center, box_w, box_h, confidence, class_id))
-
-        return detections
+        keep = (confidence > self.conf_threshold) & np.isin(class_ids, np.asarray(self.player_class_ids))
+        if not keep.any():
+            return []
+        boxes = rows[keep, :4]
+        return [
+            (float(x), float(y), float(w), float(h), float(c), int(k))
+            for (x, y, w, h), c, k in zip(boxes, confidence[keep], class_ids[keep])
+        ]
 
     def _apply_letterbox(self, frame: np.ndarray) -> tuple[np.ndarray, float, int, int]:
         height, width = frame.shape[:2]
-        scale = min(640 / width, 640 / height)
-        new_w = int(width * scale)
-        new_h = int(height * scale)
+        in_w, in_h = self.input_w, self.input_h
+        scale = min(in_w / width, in_h / height)
+        new_w = max(1, int(width * scale))
+        new_h = max(1, int(height * scale))
 
         resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        pad_x = (640 - new_w) // 2
-        pad_y = (640 - new_h) // 2
+        pad_x = (in_w - new_w) // 2
+        pad_y = (in_h - new_h) // 2
 
-        padded = np.full((640, 640, 3), 114, dtype=np.uint8)
+        padded = np.full((in_h, in_w, 3), 114, dtype=np.uint8)
         padded[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
 
         return padded, scale, pad_x, pad_y

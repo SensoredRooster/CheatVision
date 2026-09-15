@@ -3,8 +3,15 @@
 
 Weights stay gitignored under data/models/.
 
+The default input is 960: the app hands the detector a 960x540 frame, so a
+960 model sees it at full analysis resolution, while a 640 model shrinks it
+to 640x360 and loses players under ~20 px (measured on real footage: the 960
+model boxed a mid-distance operator in most frames the 640 one missed). Cost
+on the CPU is ~2.2x per pass; on a GPU (onnxruntime-directml) both are cheap.
+
 Usage:
     python tools/export_player_model.py
+    python tools/export_player_model.py --imgsz 640          # slow CPU, no GPU
     python tools/export_player_model.py --model yolov8n.pt --out data/models/yolov8n.onnx
 """
 
@@ -22,7 +29,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Export YOLO ONNX for CheatVision")
     ap.add_argument("--model", default="yolov8n.pt", help="Ultralytics model name or path")
     ap.add_argument("--out", default="data/models/yolov8n.onnx", help="Destination ONNX path")
-    ap.add_argument("--imgsz", type=int, default=640)
+    ap.add_argument("--imgsz", type=int, default=960, help="model input size (default 960; 640 for a slow CPU)")
     args = ap.parse_args()
 
     try:

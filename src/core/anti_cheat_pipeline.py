@@ -12,7 +12,7 @@ import numpy as np
 
 from src.core.anomaly_detector import REFERENCE_SAMPLE_HZ, CrosshairKinematicsAnalyzer
 from src.core.dataset_exporter import PixelVisionDatasetExporter
-from src.core.hud_masker import HUDMasker, WarzoneHUDMasker, scale_bbox, scale_point
+from src.core.hud_masker import HUDMasker, WarzoneHUDMasker, box_coverage, scale_bbox, scale_point
 from src.core.object_detector import PixelVisionObjectDetector
 from src.core.scene_gate import HELD, SceneGate
 
@@ -61,6 +61,12 @@ _STREAM_TOP_FRAC = (0.0, 0.0, 1.0, 0.10)
 _STREAM_BOTTOM_FRAC = (0.0, 0.88, 1.0, 1.0)
 _STREAM_CHAT_FRAC = (0.80, 0.10, 1.0, 0.88)
 _BLACK_FRAME_MEAN = 8.0
+# A player box is dropped as chrome / facecam only when most of it lies inside
+# an ignore region; a player standing half behind one is kept.
+_IGNORE_COVERAGE_TO_EXCLUDE = 0.6
+# A point-blank enemy can fill half the screen; only a box larger than this
+# share of the frame is treated as a false whole-scene detection.
+_MAX_BOX_AREA_RATIO = 0.6
 # Targeted-snap rules. A scripted snap is instantaneous: the frame before the
 # big step is essentially still. Human flicks ramp up -- measured on live
 # false positives: 0.6 -> 14 -> 37 px and 5 -> 41 -> 46 px -- so the previous
@@ -126,9 +132,12 @@ class AntiCheatPipeline:
         dataset_exporter: PixelVisionDatasetExporter | None = None,
         target_resolution: tuple[int, int] = (2560, 1440),
         player_detector_model_path: str = "data/models/yolov8n.onnx",
-        detection_confidence_threshold: float = 0.45,
+        detection_confidence_threshold: float = 0.35,
         detection_nms_threshold: float = 0.45,
         detection_player_class_ids: list[int] | None = None,
+        detection_input_size: int | None = None,
+        detection_provider: str = "auto",
+        detection_threads: int | None = None,
         detection_corroboration_margin_px: int = 12,
         facecam_roi: tuple[int, int, int, int] | list[int] | None = None,
         source_profile: str = "hdmi_game",
@@ -157,6 +166,9 @@ class AntiCheatPipeline:
             conf_threshold=detection_confidence_threshold,
             nms_threshold=detection_nms_threshold,
             player_class_ids=detection_player_class_ids if detection_player_class_ids is not None else [],
+            input_size=detection_input_size,
+            provider=detection_provider,
+            threads=detection_threads,
         )
         self.detector_has_result = False
         self.detection_corroboration_margin_px = detection_corroboration_margin_px
@@ -172,7 +184,7 @@ class AntiCheatPipeline:
         self._ignore_fracs: list[tuple[float, float, float, float]] = []
         self._ignore_rects_px: list[tuple[int, int, int, int]] = []
         self._content_frac = (0.0, 0.0, 1.0, 1.0)
-        self._max_box_area_ratio = 0.35
+        self._max_box_area_ratio = _MAX_BOX_AREA_RATIO
         self.set_source_profile(source_profile)
         self._prev_heads: dict[Any, tuple[float, float]] = {}
         self._sticky_hits: dict[Any, int] = {}
@@ -237,12 +249,14 @@ class AntiCheatPipeline:
     def _is_excluded_region(
         self, x1: int, y1: int, x2: int, y2: int, cx: int, cy: int, width: int, height: int
     ) -> bool:
-        if width > 0 and height > 0:
-            nx = cx / width
-            ny = cy / height
-            for x0, y0, x1f, y1f in self._ignore_fracs:
-                if x0 <= nx <= x1f and y0 <= ny <= y1f:
-                    return True
+        """Chrome, chat, facecam and HUD art are not players. A box counts as
+        one of those only when most of its area lies inside such a region;
+        the old centre test discarded real players across ~48% of a bare
+        game feed (facecam box on a feed with no facecam, the whole
+        low-centre, every HUD corner)."""
+        if width > 0 and height > 0 and self._ignore_fracs:
+            if box_coverage((x1, y1, x2, y2), self._ignore_fracs, width, height) >= _IGNORE_COVERAGE_TO_EXCLUDE:
+                return True
         return self.hud_masker.overlaps_masked_region(x1, y1, x2, y2, width=width, height=height)
 
     @property
@@ -281,7 +295,14 @@ class AntiCheatPipeline:
             fracs.append(_STREAM_BOTTOM_FRAC)
             if self._stream_chat_ignore:
                 fracs.append(_STREAM_CHAT_FRAC)
-        fracs.append(self._facecam_frac)
+            # A streamer's facecam is a "person" to the detector.
+            fracs.append(self._facecam_frac)
+        elif self._facecam_roi_explicit:
+            # The user says this game feed carries a facecam overlay.
+            fracs.append(self._facecam_frac)
+        # A bare game feed (GAME mask) has no facecam: the default box used to
+        # be applied anyway and silently discarded every player standing in
+        # the right-middle 15% of the screen.
         self._ignore_fracs = fracs
         self._ignore_rects_px = [_frac_to_pixels(width, height, rect) for rect in fracs]
         self.facecam_roi = _frac_to_pixels(width, height, self._facecam_frac)

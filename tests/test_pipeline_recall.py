@@ -149,7 +149,7 @@ class PipelineRecallTest(unittest.TestCase):
 
     def test_viewmodel_detection_is_discarded(self) -> None:
         scenario = _Scenario()
-        # Box centred bottom-middle where the player's own weapon is drawn.
+        # Box hugging the bottom edge inside the weapon zone: the player's own arms.
         scenario.pipe.update_detected_entities(
             [{"track_id": 7, "bbox": (400, 360, 640, 540), "center": (520, 450), "confidence": 0.6, "class_id": 0}],
             (H, W),
@@ -159,6 +159,26 @@ class PipelineRecallTest(unittest.TestCase):
         # Same box moved up into the play area is kept.
         scenario.pipe.update_detected_entities(
             [{"track_id": 8, "bbox": (400, 60, 440, 140), "center": (420, 100), "confidence": 0.6, "class_id": 0}],
+            (H, W),
+            (H, W),
+        )
+        self.assertEqual(len(scenario.pipe.get_analysis_entities()), 1)
+
+    def test_close_enemy_low_centre_is_kept(self) -> None:
+        """An enemy right in front of the player: the box centre is inside the
+        weapon zone, but the box reaches well above it. Real target, kept."""
+        scenario = _Scenario()
+        scenario.pipe.update_detected_entities(
+            [{"track_id": 9, "bbox": (400, 200, 640, 540), "center": (520, 370), "confidence": 0.7, "class_id": 0}],
+            (H, W),
+            (H, W),
+        )
+        self.assertEqual(len(scenario.pipe.get_analysis_entities()), 1)
+
+    def test_point_blank_enemy_filling_half_the_screen_is_kept(self) -> None:
+        scenario = _Scenario()
+        scenario.pipe.update_detected_entities(
+            [{"track_id": 10, "bbox": (200, 20, 760, 500), "center": (480, 260), "confidence": 0.8, "class_id": 0}],
             (H, W),
             (H, W),
         )

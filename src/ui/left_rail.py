@@ -570,8 +570,10 @@ class LeftRail(QWidget):
         self._signal_tremor.set_value(f"{tremor:.2f}", alert=tremor <= 0.05 and straightness >= 0.90)
         self._sparkline.push(straightness, tremor)
 
-    def set_detect(self, *, yolo_on: bool, tracks: int, gate: str) -> None:
-        self._yolo_row.set_value("ON" if yolo_on else "OFF", warn=yolo_on)
+    def set_detect(self, *, yolo_on: bool, tracks: int, gate: str, detector: str = "") -> None:
+        # e.g. "ON · 960 GPU": the model's input size and where it runs.
+        label = f"ON · {detector}" if (yolo_on and detector) else ("ON" if yolo_on else "OFF")
+        self._yolo_row.set_value(label, warn=yolo_on)
         self._tracks_row.set_value(str(int(tracks)))
         skipped = gate not in ("", "live", "ok")
         self._gate_row.set_value(gate or "live", warn=skipped)
