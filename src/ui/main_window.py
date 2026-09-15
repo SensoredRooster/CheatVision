@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
             source_profile=str(settings.get("source_profile", "hdmi_game")),
             game_profile=str(settings.get("game_profile", "warzone")),
             stream_chat_ignore=bool(settings.get("stream_chat_ignore", True)),
+            analysis_rate_hz=float(settings.get("analysis_rate_hz", 20) or 20),
         )
         self.live_overlay = PixelVisionLiveOverlay()
         self.advanced_overlay = PixelVisionAdvancedOverlayEngine(target_resolution=target_resolution)
@@ -566,6 +567,9 @@ class MainWindow(QMainWindow):
         # unadvertised, and fell through to the largest mode on the card (4K).
         self.pipeline.update_target_resolution(width, height)
         self.dataset_exporter.set_target_resolution(width, height)
+        # Nominal rate for now; the measured unique-picture rate refines it
+        # about a second later via _on_feed_rate_measured.
+        self._apply_feed_rate(fps)
         input_mode = self._capture_worker.input_mode() if self._capture_worker is not None else None
         override = self.settings.get("capture_resolution_override")
         override_rejected = False
@@ -649,8 +653,16 @@ class MainWindow(QMainWindow):
         )
         return mode if all(value > 0 for value in mode) else None
 
+    def _apply_feed_rate(self, fps: float) -> None:
+        """Feed rate -> analysis cadence (stride + analyser thresholds) -> rail readout."""
+        if fps and fps > 0:
+            self.pipeline.set_feed_rate(float(fps))
+        self.left_rail.set_analysis_rate(self.pipeline.analysis_cadence_hz, self.pipeline.analysis_stride)
+
     def _on_feed_rate_measured(self, delivered_fps: float, unique_fps: float, starved: bool) -> None:
         self.left_rail.set_feed_rate(delivered_fps, unique_fps, starved=starved)
+        # Only new pictures are analysed, so the cadence follows the unique rate.
+        self._apply_feed_rate(unique_fps if unique_fps > 0 else delivered_fps)
         if unique_fps > 0 and not (
             self.dataset_exporter.is_recording_baseline or self.dataset_exporter.is_recording_session
         ):
@@ -673,6 +685,7 @@ class MainWindow(QMainWindow):
     @Slot(int, int, float, int)
     def _on_playback_source_opened(self, width: int, height: int, fps: float, total_frames: int) -> None:
         self.pipeline.update_target_resolution(width, height)
+        self._apply_feed_rate(fps)
         self.playback_controls.set_total_frames(total_frames)
         filename = getattr(self, "_mounted_vod_name", "VOD")
         self._vod_status_text = f"VOD · {filename} · {width}×{height} @ {fps:.0f}"

@@ -6,6 +6,7 @@
   "capture_width": 2560,
   "capture_height": 1440,
   "capture_fps": 144,
+  "capture_pixel_format": "auto",
   "screen_monitor_index": 1,
   "screen_region": [
     0,
@@ -17,6 +18,7 @@
   "log_directory": "logs",
   "window_title": "CheatVision",
   "detection_fps": 30,
+  "analysis_rate_hz": 20,
   "player_detector_model_path": "data/models/yolov8n.onnx",
   "detection_confidence_threshold": 0.45,
   "detection_nms_threshold": 0.45,

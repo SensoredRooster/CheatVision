@@ -116,6 +116,7 @@ card. Check the HDMI cable and that the gaming PC/console is outputting.
 | source selector | **device · profile** in one pick, e.g. `HD60 X · HDMI GAME`, `GC573 1 · HDMI GAME` or `OBS VCam · STREAM WIN` — the device part is **your** hardware's own name as Windows reports it, trimmed of vendor boilerplate to fit. The device is *what to read* (capture card, or another app's **Virtual Camera**, see §5); the profile is *which screen regions to ignore* (see §6). Hover it for the full device name. Remembered across restarts. |
 | **MODE** | a picker. **AUTO** tests the device's modes, keeps the fastest one that streams cleanly, and shows what it negotiated (`AUTO · 2560×1440 @ 144`). The other entries are **only the modes this device advertised** at the last scan — nothing generic. Pick one to restart capture on it; if the device rejects it, capture falls back to AUTO and the status text says so. Remembered across restarts. |
 | **FEED** | what the device is **really delivering**: `71 fps (60 new)` = 71 frames/s handed over, 60 of them new pictures. This is the honest number — see §7. Turns red if starved. |
+| **ANALYSIS** | how many new pictures a second the aim analyser scores, and what fraction of the feed that is: `20 Hz · 1 in 3` on a 60 fps feed, `21 Hz · 1 in 7` on 144, `20 Hz · 1 in 12` on 240. The stride follows the feed so every source is judged at the same cadence — see §7. |
 | **PIPE** | how frames get in: `CAP_FFMPEG` (card), `VIRTUAL_CAM`, `GDI_BROWSER`, `MSS` (screen), `VOD` |
 | IGNORE | how many ignore rectangles the profile is applying |
 | BASE | `idle` or `rec` while a baseline is recording |
@@ -188,8 +189,11 @@ The fix is built in:
    (or *OBS Virtual Camera*).
 3. PIPE shows `VIRTUAL_CAM`, FEED shows `60 fps`. Both apps now run together.
 
-The virtual camera is 2560×1440 at 60 — and 60 new pictures a second is all the
-card produces anyway (§7), so nothing is lost. The choice is saved; next launch
+A virtual camera is a **software feed at its host app's rate**. Streaming
+Center's lists every size at 30 or 60 only (`ffmpeg -list_options` on the
+development machine), so FEED cannot read above 60 on it whatever the HDMI
+signal is doing. While the gaming PC sends 60 Hz that costs nothing; to analyse
+a 144 Hz signal, read the card itself (§7). The choice is saved; next launch
 CheatVision goes straight to it.
 
 If you pick a virtual camera and its host app has the output switched **off**,
@@ -222,19 +226,49 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
   calibration negotiated (`AUTO · 2560×1440 @ 144`); a pinned entry is the mode
   you chose. Neither is the HDMI signal's own refresh rate — a capture card
   does not expose that to Windows, it only lists the capture modes it can
-  output, and it repeats or skips frames to fit.
+  output, and it repeats or skips frames to fit. The picker offers every
+  common refresh step inside what the device advertises (24 … 144, 165, 240,
+  360) and nothing it does not.
 - **FEED** is what *arrives*. Every card has its own delivery ceiling per
   resolution, and FEED shows yours. Example from the development card (GC573)
   at 1440p: the driver hands over ~70 frames/s no matter what you request, and
   with a 60 Hz HDMI signal FEED reads `71 fps (60 new)`. That is not a bug in
   CheatVision; it is the card. Duplicated frames are detected and thrown away
   so the analyser only ever sees new pictures.
-- Want more than 60 new pictures? That is decided on the **gaming PC**: the
-  refresh rate Windows assigns to the capture-card "monitor". A 360 Hz main
-  monitor cloned with the card forces a common rate.
+- **FEED stuck at 60 on a 144 Hz setup?** Check these in order:
+  1. **Source.** A *virtual camera* (Streaming Center, OBS, Streamlabs) is
+     capped by its host app — Streaming Center publishes 30/60 only. Pick the
+     card's own entry in SOURCE; PIPE must read `CAP_FFMPEG`, not `VIRTUAL_CAM`.
+  2. **The gaming PC.** New pictures a second can never exceed the refresh
+     rate Windows *on the gaming PC* gives the display the capture card
+     presents itself as (Settings → Display → Advanced display → choose the
+     capture-card display → refresh rate). If that display **duplicates** the
+     main monitor, Windows uses the lowest rate both accept — extend instead,
+     or run the game on the card's display. The game's own frame cap counts too.
+  3. **The card's driver.** A delivered rate below the mode (~70 of 144 on the
+     GC573 in the default format) is a per-format driver ceiling. Close every
+     app that holds the card and run `python tools/probe_capture_rate.py`: it
+     streams the mode in `auto`, `bgr24`, `nv12` and `yuyv422` for a few
+     seconds each and prints delivered and unique fps per format. If one
+     clearly beats `auto`, set it as `capture_pixel_format` in
+     `config/settings.local.json` and press RESCAN.
+- **ANALYSIS** is how often the aim rules run, and it is deliberately *not*
+  the feed rate. The rules were tuned at ~20 analysed samples a second (60 new
+  pictures, every third one). Whatever FEED reads, the pipeline picks the
+  stride that lands nearest that cadence — 1 in 3 at 60, 1 in 7 at 144, 1 in
+  12 at 240 — and tells the analyser the exact rate, so its windows are
+  measured in seconds and its per-step thresholds are rescaled (a 144 Hz feed
+  analysed every frame would otherwise read as slower *and* steadier than a
+  60 Hz one, which is what a bot looks like). The stride only moves when the
+  cadence drifts more than ~30 % from target, so 59–71 fps jitter never flaps
+  it. To score more samples a second set `analysis_rate_hz` (e.g. `48`); the
+  thresholds follow, but the tuning evidence is at 20.
 - The development card's own maximum at 1440p is 144 (advertised) / ~70
-  (delivered); it does 240 at 1080p. Your card's numbers will differ: the MODE
-  picker lists what it advertises, FEED shows what it delivers.
+  (delivered in the default format); it advertises 240 at 1080p and 60 at 4K,
+  and no 360 mode at any size. 1080p at 360 would also exceed the raw-pipe
+  budget (2.2 GB/s in bgr24), so it needs a card that advertises it *and* a
+  compact pipe format — not supported yet. Your card's numbers will differ:
+  the MODE picker lists what it advertises, FEED shows what it delivers.
 
 ---
 
@@ -244,6 +278,7 @@ game by copying `config/game_profiles/warzone.json` and editing the fractions.
 |---|---|---|
 | `Capture card is in use by another application…` | OBS/Streamlabs/RECentral/a browser tab owns the card | close it and press **RESCAN**, or use the virtual camera (§5) |
 | `CAPTURE CARD DELIVERING ONLY N FPS` (amber) | another app grabbed the card mid-session | same as above |
+| FEED never above `60 fps` on a 144 Hz setup | the source is a virtual camera, the gaming PC sends the card 60 Hz, or the card's default pixel format caps delivery | the three checks in §7 |
 | `NO PIXEL CHANGE DETECTED` / SIGNAL **FREEZE** | picture identical for 1.5 s | pause menu, alt-tab, or no signal. Clears by itself when motion returns |
 | `Waiting for capture device` | device opened but sends nothing | check HDMI cable / source power |
 | `… is registered but not sending frames` | virtual camera picked but its host app's output is off | turn on Virtual Camera in OBS / Streaming Center, press **RESCAN** |
@@ -311,10 +346,13 @@ CLEAN**. Zero dropped frames at 1440p in testing; ~90 MB of memory.
 | `source_profile` | `hdmi_game` / `stream_window` / `vod_file` |
 | `game_profile` | `warzone` (default) or `generic` |
 | `capture_width` / `capture_height` / `capture_fps` | mode to request; the app verifies it and falls back if the device can't do it |
+| `capture_pixel_format` | `auto` (driver's choice, default) or a DirectShow format to request from a capture card (`nv12`, `yuyv422`, `bgr24`); measure first with `tools/probe_capture_rate.py` (§7) |
 | `playback_fps` | force a VOD's rate; `0` = trust the file (accepted range 12–480, else 30) |
 | `capture_resolution_override` | the MODE pin as `{"width", "height", "fps"}`; absent = AUTO (saved automatically, local file) |
 | `player_detector_model_path` | ONNX weights, default `data/models/yolov8n.onnx` |
 | `detection_fps` | how often YOLO runs (default 30) |
+| `analysis_rate_hz` | analysed aim samples a second to aim for (default 20, the cadence the rules were tuned at); the stride follows the feed's real rate (§7) |
+| `analysis_stride` | starting stride (default 3); adapts automatically once the feed rate is known |
 | `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds |
 | `detection_player_class_ids` | `[0]` = COCO "person" |
 | `facecam_roi` | `[]` = default bottom-right box; or `[x0, y0, x1, y1]` as fractions or pixels |
@@ -357,7 +395,7 @@ The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
 1. Plug in / power the source. Start OBS / Streaming Center **before** CheatVision if you want to record.
 2. `python main.py`.
 3. SOURCE → pick your capture card's `… · HDMI GAME` entry, or its `… VCam · …` entry if you're recording.
-4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows ~60 new.
+4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows as many new pictures as your HDMI signal carries (60 on a 60 Hz signal, 144 on 144), ANALYSIS about 20 Hz.
 5. Play. Watch INCIDENTS. Double-check anything flagged by eye.
 6. Optional: RECORD CLEAN BASELINE during matches you know are legit.
 7. Close the window normally (it shuts the capture down cleanly).
@@ -408,7 +446,7 @@ about what gets flagged.
 
 Capture cards go through **ffmpeg dshow**, not OpenCV's camera API.
 
-1. `ffmpeg -list_options` → parse bgr24 modes.
+1. `ffmpeg -list_options` → parse the modes of the pixel format we will request (bgr24 unless `capture_pixel_format` says otherwise).
 2. Ladder: **requested mode first**, then the requested resolution's other
    rates, then sizes nearest to the request (never up to 4K when 1440p was
    asked), sub-720 last. 144.0 and 144.001 are the same mode and probed once.
@@ -422,7 +460,9 @@ Capture cards go through **ffmpeg dshow**, not OpenCV's camera API.
 requested rate with duplicates), raw BGR24 into a **64 MB kernel pipe** read
 with unbuffered `readinto` straight into the frame array (the 32 KB pipe +
 `BufferedReader` maxed out ~83 fps and made ffmpeg drop frames). Requests a
-pixel format only for virtual cameras.
+pixel format for virtual cameras (the one they publish) and for capture cards
+only when `capture_pixel_format` is set; `tools/probe_capture_rate.py` measures
+delivered/unique fps per format so that setting rests on evidence.
 
 **Shutdown:** ffmpeg gets `q` on stdin and is waited for before anything else;
 hard kill is the fallback. Killing a streaming dshow graph wedges the development card's AVerMedia
@@ -452,8 +492,8 @@ Raw skip reasons from the analysis frame:
 | `no_hud` | no minimap/ammo/stance energy |
 | `frozen` | capture freeze latch |
 
-Published state is **Live** or **Held** with N = 20 frames of hysteresis each
-way. While Held: no overlays, `GATE:<reason>` chip, analyser and head trackers
+Published state is **Live** or **Held** with a third of a second of hysteresis
+each way (20 frames at 60 fps, scaled to the feed rate). While Held: no overlays, `GATE:<reason>` chip, analyser and head trackers
 reset, STR/TREMOR = 0. A short raw skip while still Live only idles telemetry.
 The canvas always shows the live picture (never a held frame).
 
@@ -468,7 +508,8 @@ FPS reticles sit at screen centre; cheats move the **camera**.
 3. Phase correlation vs the previous ROI → scene translation; aim delta is the
    negation. Fine estimate from four edge bands, coarse whole-ROI estimate takes
    over when they disagree (bands read a 60 px snap as ~7 px).
-4. 18-sample window: straightness = displacement / path length; tremor =
+4. 0.9 s window (18 samples at the 20 Hz reference cadence, re-sized to the
+   real cadence): straightness = displacement / path length; tremor =
    max(residual variance off a line, step variance); **jerk** = variance of the
    second difference (a bot tracking a *curving* target reads as tremor 10–16 on
    a line fit while the hand does nothing).
@@ -483,6 +524,17 @@ FPS reticles sit at screen centre; cheats move the **camera**.
 straightness ≥ 0.985 occurs 7–48× per clip (every flick is briefly straight),
 single steps reach 47 px, but fast + tremor ≤ 0.45 occurred **zero** times.
 Frame-count persistence also behaved differently at 60 vs 144 Hz.
+
+**Cadence:** the rules above are tuned for ~20 analysed samples a second.
+`AntiCheatPipeline.set_feed_rate()` (fed by the measured unique-picture rate,
+or a VOD's fps) picks the stride that lands nearest `analysis_rate_hz` and only
+changes it when the cadence leaves a 0.7–1.4× band, then calls
+`CrosshairKinematicsAnalyzer.set_sample_rate()`: velocity-like thresholds
+(16 px/step, snap 12, flick 26, sticky camera move 4) scale with the step time,
+variance-like ones (tremor 0.45, jerk 4) with its square, step counts (lock
+streak 3, sticky hits 6) inversely, the window covers 0.9 s and the scene-gate
+hysteresis a third of a second. At the reference cadence every number is
+exactly the tuned one.
 
 Replica-aim with YOLO boxes (detections inside the profile's
 `detection_ignore_frac` — the player's own weapon — are discarded first):
@@ -540,5 +592,5 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | `src/ui/main_window.py` | composition root, worker wiring, settings persistence |
 | `src/ui/workers.py` | capture / playback / analysis / detection / render threads |
 | `src/ui/control_bar.py`, `left_rail.py`, `video_canvas.py`, `incident_queue.py`, `playback_controls.py`, `theme.py` | widgets |
-| `tools/` | `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py` |
-| `tests/` | 27 unit tests |
+| `tools/` | `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py`, `probe_capture_rate.py` (delivered/unique fps per pixel format) |
+| `tests/` | 67 unit tests |

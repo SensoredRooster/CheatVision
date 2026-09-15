@@ -10,7 +10,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
-from src.core.anomaly_detector import CrosshairKinematicsAnalyzer
+from src.core.anomaly_detector import REFERENCE_SAMPLE_HZ, CrosshairKinematicsAnalyzer
 from src.core.dataset_exporter import PixelVisionDatasetExporter
 from src.core.hud_masker import HUDMasker, WarzoneHUDMasker, scale_bbox, scale_point
 from src.core.object_detector import PixelVisionObjectDetector
@@ -68,6 +68,17 @@ _BLACK_FRAME_MEAN = 8.0
 # must stay on the head this long before the verdict is reported.
 _SNAP_RAMP_RATIO = 0.15
 _SNAP_HOLD_SECONDS = 0.20
+# The aim rules are tuned for ~20 analysed samples a second (60 new pictures
+# analysed every third frame). set_feed_rate() keeps the analysis cadence in
+# this band around analysis_rate_hz by choosing the stride, and hands the exact
+# cadence to the analyser so its per-step thresholds stay in real units.
+_CADENCE_BAND = (0.7, 1.4)
+_MAX_ANALYSIS_STRIDE = 60
+# Scene-gate hysteresis as time: the original 20 frames at 60 fps.
+_GATE_HYSTERESIS_SECONDS = 20.0 / 60.0
+_GATE_HYSTERESIS_FRAMES = (10, 120)
+# Sticky-aim hits are counted in analysed steps: this many at the reference cadence.
+_STICKY_NEED_REFERENCE = 6
 
 
 def _clamp_frac(rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -123,11 +134,16 @@ class AntiCheatPipeline:
         source_profile: str = "hdmi_game",
         game_profile: str = "warzone",
         stream_chat_ignore: bool = True,
+        analysis_rate_hz: float = REFERENCE_SAMPLE_HZ,
     ):
         self.logger = PixelVisionLogger(log_dir=log_dir)
         self.hud_masker = HUDMasker(target_resolution=target_resolution, game_profile=game_profile)
         self.crosshair_analyzer = CrosshairKinematicsAnalyzer()
         self.analysis_stride = max(1, int(analysis_stride))
+        # Analysed samples a second to aim for; the stride follows the feed.
+        self.analysis_rate_hz = max(1.0, float(analysis_rate_hz or REFERENCE_SAMPLE_HZ))
+        # New pictures a second the source is really producing (0 = unknown).
+        self.feed_fps = 0.0
         self.frame_counter = 0
         self.last_frame_hash: Optional[bytes] = None
         self._entities_lock = threading.Lock()
@@ -185,6 +201,38 @@ class AntiCheatPipeline:
 
     def should_analyze_frame(self, frame_id: int) -> bool:
         return frame_id % self.analysis_stride == 0
+
+    @property
+    def analysis_cadence_hz(self) -> float:
+        """Analysed samples a second for the current feed (0 until a rate is known)."""
+        if self.feed_fps <= 0.0:
+            return 0.0
+        return self.feed_fps / max(1, self.analysis_stride)
+
+    def set_feed_rate(self, fps: float) -> None:
+        """Adapt the analysis cadence to the feed's real rate of *new* pictures.
+
+        The stride only changes when the cadence it gives leaves the band
+        around analysis_rate_hz, so a feed jittering between 59 and 71 fps
+        keeps one stride while a switch from 60 to 144 or 240 re-derives it.
+        The analyser is told the exact cadence either way, and its window is
+        cleared when the stride moves so one window never mixes two step
+        lengths. The scene gate's hysteresis follows the feed rate as well.
+        """
+        fps = float(fps or 0.0)
+        if fps <= 0.0:
+            return
+        self.feed_fps = fps
+        target = self.analysis_rate_hz
+        cadence = fps / max(1, self.analysis_stride)
+        if not (_CADENCE_BAND[0] * target <= cadence <= _CADENCE_BAND[1] * target):
+            stride = int(max(1, min(_MAX_ANALYSIS_STRIDE, round(fps / target))))
+            if stride != self.analysis_stride:
+                self.analysis_stride = stride
+                self.crosshair_analyzer.reset()
+        self.crosshair_analyzer.set_sample_rate(self.analysis_cadence_hz)
+        low, high = _GATE_HYSTERESIS_FRAMES
+        self.scene_gate.set_hysteresis_frames(int(max(low, min(high, round(_GATE_HYSTERESIS_SECONDS * fps)))))
 
     def _is_excluded_region(
         self, x1: int, y1: int, x2: int, y2: int, cx: int, cy: int, width: int, height: int
@@ -562,12 +610,18 @@ class AntiCheatPipeline:
         analysis_w: int,
     ) -> dict[str, Any] | None:
         scale = max(float(analysis_w), 1.0) / 960.0
+        # Distances on screen scale with the analysis size only; anything
+        # measured *per analysed step* (a step length, a hit count) also
+        # follows the analysis cadence (see set_feed_rate): at 20 samples/s
+        # rate == 1.0 and these are the tuned numbers.
+        rate = float(getattr(self.crosshair_analyzer, "rate_scale", 1.0) or 1.0)
         snap_min = 12.0 * scale
+        snap_step = snap_min * rate
         land_px = 34.0 * scale
         sticky_err = 22.0 * scale
-        sticky_cam_move = 4.0 * scale
-        sticky_need = 6
-        flick_px = 26.0 * scale
+        sticky_cam_move = 4.0 * scale * rate
+        sticky_need = max(3, int(round(_STICKY_NEED_REFERENCE / rate)))
+        flick_px = 26.0 * scale * rate
         rx, ry = float(reticle[0]), float(reticle[1])
         dx = float(metrics.get("last_dx") or 0.0)
         dy = float(metrics.get("last_dy") or 0.0)
@@ -584,7 +638,7 @@ class AntiCheatPipeline:
             prev_dx = float(path[-2][0]) - float(path[-3][0])
             prev_dy = float(path[-2][1]) - float(path[-3][1])
             prev_step = (prev_dx * prev_dx + prev_dy * prev_dy) ** 0.5
-            instant = prev_step <= max(2.0 * scale, last_step * _SNAP_RAMP_RATIO)
+            instant = prev_step <= max(2.0 * scale * rate, last_step * _SNAP_RAMP_RATIO)
 
         heads: dict[Any, tuple[float, float]] = {}
         snap: dict[str, Any] | None = None
@@ -600,7 +654,7 @@ class AntiCheatPipeline:
             hx, hy = head
             err = float((hx - rx) ** 2 + (hy - ry) ** 2) ** 0.5
             previous = self._prev_heads.get(track_id)
-            if instant and last_step >= snap_min and err <= land_px:
+            if instant and last_step >= snap_step and err <= land_px:
                 aligned = True
                 if previous is not None:
                     needed_x = previous[0] - rx
@@ -610,7 +664,7 @@ class AntiCheatPipeline:
                         align = (needed_x * dx + needed_y * dy) / (need_n * max(last_step, 1e-6))
                         aligned = align >= 0.65
                 if aligned:
-                    confidence = min(1.0, 0.45 + last_step / (snap_min * 3.0) + (1.0 - err / max(land_px, 1.0)) * 0.4)
+                    confidence = min(1.0, 0.45 + last_step / (snap_step * 3.0) + (1.0 - err / max(land_px, 1.0)) * 0.4)
                     if snap is None or confidence > snap["confidence"]:
                         snap = {"event_type": "SNAP_TO_TARGET", "confidence": confidence, "track_id": track_id}
             # Sticky aim: the reticle stays on the head *while the camera is

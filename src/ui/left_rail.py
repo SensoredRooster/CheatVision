@@ -187,6 +187,12 @@ class LeftRail(QWidget):
         "Camera entry (OBS / Streaming Center / Streamlabs) to analyse while that app records. The profile "
         "part (HDMI GAME / STREAM WINDOW / VOD FILE) decides which screen regions are ignored."
     )
+    _ANALYSIS_HELP = (
+        "How many new pictures a second the aim analyser scores, and what fraction of the feed "
+        "that is. The stride follows the feed's real rate, so 60, 144 and 240 Hz sources are "
+        "judged at the same cadence and the aim thresholds keep their real-world meaning "
+        "(analysis_rate_hz in settings, default 20)."
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -262,12 +268,18 @@ class LeftRail(QWidget):
         self._negotiated_low_mode = False
         self._pinned_mode: tuple[int, int, int] = (0, 0, 0)
         self._source_feed = MetricRow("Feed")
+        # Analysed samples a second and the stride producing them: the aim
+        # rules run at one cadence whatever the feed's rate (see
+        # AntiCheatPipeline.set_feed_rate), and this row shows that choice.
+        self._source_analysis = MetricRow("Analysis")
+        self._source_analysis.setToolTip(self._ANALYSIS_HELP)
         self._source_backend = MetricRow("Pipe")
         self._ignore_row = MetricRow("Ignore")
         self._baseline_row = MetricRow("Base")
         self.source.add_row(self.source_combo)
         self.source.add_row(self._mode_row)
         self.source.add_row(self._source_feed)
+        self.source.add_row(self._source_analysis)
         self.source.add_row(self._source_backend)
         self.source.add_row(self._ignore_row)
         self.source.add_row(self._baseline_row)
@@ -461,6 +473,7 @@ class LeftRail(QWidget):
         self.mode_combo.setItemText(0, self._auto_label())
         self._source_backend.set_value(backend or "—")
         self._source_feed.set_value("—")
+        self._source_analysis.set_value("—")
 
     def set_feed_rate(self, delivered_fps: float, unique_fps: float, *, starved: bool = False) -> None:
         """Real frame rate arriving from the device (vs. the requested mode)."""
@@ -471,6 +484,15 @@ class LeftRail(QWidget):
         if unique_fps > 0 and unique_fps < delivered_fps - 2:
             text += f" ({unique_fps:.0f} new)"
         self._source_feed.set_value(text, alert=starved)
+
+    def set_analysis_rate(self, cadence_hz: float, stride: int) -> None:
+        """Analysed samples a second and the stride that produces them."""
+        if cadence_hz <= 0:
+            self._source_analysis.set_value("—")
+            return
+        stride = max(1, int(stride))
+        every = "every frame" if stride == 1 else f"1 in {stride}"
+        self._source_analysis.set_value(f"{cadence_hz:.0f} Hz · {every}")
 
     def set_signal(self, *, frozen: bool, straightness: float, tremor: float) -> None:
         if frozen:

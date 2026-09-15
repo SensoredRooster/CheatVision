@@ -47,6 +47,12 @@ class SceneGate:
     def gate_reason(self) -> str:
         return self.reason
 
+    def set_hysteresis_frames(self, frames: int) -> None:
+        """Frames a raw state must persist before it is published. The pipeline
+        derives this from the feed rate so the hold is the same length of
+        time at 60 and at 240 pictures a second."""
+        self.N = max(1, int(frames))
+
     def reset(self) -> None:
         self.published = LIVE
         self.reason = RAW_LIVE

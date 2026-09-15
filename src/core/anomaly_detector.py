@@ -8,6 +8,23 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
+# Cadence the per-step thresholds in this file were tuned at: the author's
+# live setup delivers 60 new pictures a second and the pipeline analyses
+# every third one. Every "px per step" or "steps" number below means "at 20
+# samples a second"; set_sample_rate() rescales them for any other cadence.
+REFERENCE_SAMPLE_HZ = 20.0
+# The 18-sample window at the reference cadence, as time, so the window
+# covers the same stretch of play whatever the sample rate.
+WINDOW_SECONDS = 18.0 / REFERENCE_SAMPLE_HZ
+_MIN_WINDOW_SAMPLES = 8
+_MAX_WINDOW_SAMPLES = 120
+_MIN_SAMPLE_HZ = 5.0
+_MAX_SAMPLE_HZ = 480.0
+# A wildly wrong rate estimate must not push every threshold to zero or to
+# infinity: the per-step scale factor is kept inside this range.
+_MIN_RATE_SCALE = 0.25
+_MAX_RATE_SCALE = 4.0
+
 
 @dataclass
 class CrosshairSample:
@@ -65,6 +82,9 @@ class CrosshairKinematicsAnalyzer:
         # "geometric line". Legit fast whips measured 100-400; a scripted pan
         # is < 1.
         self.line_max_jerk = line_max_jerk
+        # Cadence the thresholds are currently applied at; scale 1.0 = as tuned.
+        self.sample_hz = REFERENCE_SAMPLE_HZ
+        self.rate_scale = 1.0
         self.delta_history: deque[tuple[float, float]] = deque(maxlen=window_size)
         self.previous_roi: Optional[np.ndarray] = None
         self.previous_gray: Optional[np.ndarray] = None
@@ -74,6 +94,37 @@ class CrosshairKinematicsAnalyzer:
         self._line_since: float | None = None
         self._lock_since: float | None = None
         self._last_timestamp: float | None = None
+
+    def set_sample_rate(self, hz: float) -> int:
+        """Tell the analyser how many samples a second update() will see.
+
+        The per-step thresholds were tuned at REFERENCE_SAMPLE_HZ. A faster
+        feed makes every step shorter: the same real aim speed measures fewer
+        pixels per step, and per-step variances shrink with roughly the square
+        of the step time for smooth motion. Left uncorrected, a 144 Hz feed
+        reads as slower *and* steadier than a 60 Hz one -- which is exactly
+        the signature of a bot. Velocity-like thresholds scale linearly with
+        the step time, variance-like ones quadratically, step counts inversely,
+        and the window is re-sized to keep covering WINDOW_SECONDS of play.
+        Returns the window size now in use.
+        """
+        hz = float(hz or 0.0)
+        if hz <= 0.0:
+            return int(self.delta_history.maxlen or self.window_size)
+        hz = max(_MIN_SAMPLE_HZ, min(_MAX_SAMPLE_HZ, hz))
+        scale = max(_MIN_RATE_SCALE, min(_MAX_RATE_SCALE, REFERENCE_SAMPLE_HZ / hz))
+        window = int(max(_MIN_WINDOW_SAMPLES, min(_MAX_WINDOW_SAMPLES, round(WINDOW_SECONDS * hz))))
+        with self._lock:
+            self.sample_hz = hz
+            self.rate_scale = scale
+            if window != self.delta_history.maxlen:
+                recent = list(self.delta_history)[-window:]
+                self.delta_history = deque(recent, maxlen=window)
+        return window
+
+    @property
+    def effective_window(self) -> int:
+        return int(self.delta_history.maxlen or self.window_size)
 
     def reset(self) -> None:
         with self._lock:
@@ -278,8 +329,15 @@ class CrosshairKinematicsAnalyzer:
             mean_velocity = float(np.mean(step_distances))
             max_step = float(np.max(step_distances))
 
-            smooth_lock = jerk_variance <= self.zero_variance_epsilon
-            if mean_velocity > self.velocity_threshold * 0.65 and (tremor_variance <= self.zero_variance_epsilon or smooth_lock):
+            # Thresholds in this step's real units (see set_sample_rate).
+            scale = self.rate_scale
+            velocity_threshold = self.velocity_threshold * scale
+            variance_epsilon = self.zero_variance_epsilon * scale * scale
+            max_jerk = self.line_max_jerk * scale * scale
+            lock_streak = max(2, int(round(self.lock_streak / scale)))
+
+            smooth_lock = jerk_variance <= variance_epsilon
+            if mean_velocity > velocity_threshold * 0.65 and (tremor_variance <= variance_epsilon or smooth_lock):
                 self.zero_tremor_streak += 1
             else:
                 self.zero_tremor_streak = 0
@@ -300,9 +358,9 @@ class CrosshairKinematicsAnalyzer:
             # flags that motivated this had tremor 110 and 419 -- so the line
             # rule also demands low jerk, i.e. no frame-to-frame jitter.
             line_now = (
-                mean_velocity >= self.velocity_threshold
+                mean_velocity >= velocity_threshold
                 and straightness >= self.straightness_threshold
-                and jerk_variance <= self.line_max_jerk
+                and jerk_variance <= max_jerk
             )
             if line_now:
                 if self._line_since is None:
@@ -311,7 +369,7 @@ class CrosshairKinematicsAnalyzer:
                 self._line_since = None
             line_held = self._line_since is not None and (now - self._line_since) >= self.line_hold_seconds
 
-            lock_now = self.zero_tremor_streak >= self.lock_streak and mean_velocity >= self.velocity_threshold * 0.65
+            lock_now = self.zero_tremor_streak >= lock_streak and mean_velocity >= velocity_threshold * 0.65
             if lock_now:
                 if self._lock_since is None:
                     self._lock_since = now
@@ -338,6 +396,8 @@ class CrosshairKinematicsAnalyzer:
                 "last_step": last_step,
                 "jerk_variance": jerk_variance,
                 "line_seconds": (now - self._line_since) if self._line_since is not None else 0.0,
+                "sample_hz": self.sample_hz,
+                "rate_scale": scale,
                 "path": coords.tolist(),
                 "residuals": residuals.tolist(),
             }
@@ -350,7 +410,7 @@ class CrosshairKinematicsAnalyzer:
                 1.0,
                 max(
                     straightness,
-                    mean_velocity / max(self.velocity_threshold, 1e-4),
+                    mean_velocity / max(velocity_threshold, 1e-4),
                 ),
             )
             self.last_metrics = {
