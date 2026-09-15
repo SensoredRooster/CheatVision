@@ -5,7 +5,8 @@ from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from src.core.anti_cheat_pipeline import FrameContext
-from src.ui.theme import ACCENT, CANVAS_IDLE_COLOR
+from src.ui.branding import brand_pixmap
+from src.ui.theme import CANVAS_IDLE_COLOR, TEXT_MUTED
 
 
 class VideoCanvas(QWidget):
@@ -63,13 +64,35 @@ class VideoCanvas(QWidget):
         painter.fillRect(self.rect(), QColor(CANVAS_IDLE_COLOR))
 
         if self._image is None:
-            painter.setPen(QColor(ACCENT))
-            painter.drawText(self.rect(), Qt.AlignCenter, self._idle_text)
+            self._paint_idle(painter)
             painter.end()
             return
 
         painter.drawImage(self._letterbox_rect(self._image.size(), self.size()), self._image)
         painter.end()
+
+    def _paint_idle(self, painter: QPainter) -> None:
+        """The brand mark centred with the status line under it: the app's
+        face while nothing is playing (start-up, waiting for a device, a VOD
+        loading, a capture error)."""
+        rect = self.rect()
+        size = int(max(48, min(rect.width(), rect.height()) * 0.22))
+        mark = brand_pixmap(size, painter.device().devicePixelRatioF())
+        text_top = rect.center().y() - 8
+        if not mark.isNull():
+            logical_w = int(mark.width() / mark.devicePixelRatio())
+            logical_h = int(mark.height() / mark.devicePixelRatio())
+            x = rect.center().x() - logical_w // 2
+            y = rect.center().y() - logical_h - 4
+            painter.drawPixmap(x, y, mark)
+            text_top = rect.center().y() + 14
+        painter.setPen(QColor(TEXT_MUTED))
+        font = painter.font()
+        font.setPixelSize(12)
+        font.setBold(True)
+        painter.setFont(font)
+        text_rect = QRect(rect.left() + 24, text_top, max(1, rect.width() - 48), 48)
+        painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self._idle_text)
 
     def _letterbox_rect(self, image_size: QSize, widget_size: QSize) -> QRect:
         if image_size.width() <= 0 or image_size.height() <= 0:

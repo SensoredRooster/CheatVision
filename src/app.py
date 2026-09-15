@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 from PySide6.QtWidgets import QApplication
 
+from src.ui.branding import brand_icon
 from src.ui.main_window import MainWindow
 
 # OpenCV defaults to one pool thread per logical core (20 here). For the small
@@ -46,10 +47,25 @@ def load_settings(project_root: Path | None = None) -> dict:
     return settings
 
 
+def _claim_taskbar_identity() -> None:
+    """Give the process its own Windows taskbar identity so the taskbar shows
+    the CheatVision mark rather than python.exe's icon."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CheatVision.ReviewConsole")
+    except Exception:
+        pass
+
+
 def main() -> None:
     cv2.setNumThreads(_OPENCV_THREADS)
     settings = load_settings()
     app = QApplication(sys.argv)
+    _claim_taskbar_identity()
+    app.setWindowIcon(brand_icon())
     window = MainWindow(settings)
     window.show()
     sys.exit(app.exec())

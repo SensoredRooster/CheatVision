@@ -7,6 +7,9 @@ from typing import Any, Optional, Tuple
 import cv2
 import numpy as np
 
+# BGR of the alert red (#FF4D57): a flagged track is the only red on the picture.
+_FLAG_COLOR = (87, 77, 255)
+
 
 class PixelVisionAdvancedOverlayEngine:
     def __init__(self, target_resolution: Tuple[int, int] = (2560, 1440)):
@@ -93,7 +96,7 @@ class PixelVisionAdvancedOverlayEngine:
             if entity.get("track_id") not in flagged_track_ids:
                 continue
             x1, y1, x2, y2 = entity.get("bbox", (0, 0, 0, 0))
-            cv2.rectangle(display_canvas, (x1, y1), (x2, y2), (92, 59, 255), 2)
+            cv2.rectangle(display_canvas, (x1, y1), (x2, y2), _FLAG_COLOR, 2)
         return display_canvas
 
     def _draw_chip(self, canvas: np.ndarray, text: str) -> None:

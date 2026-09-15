@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/cheatvision_mark.png" alt="CheatVision" width="160">
+</p>
+
 # CheatVision — How-To Guide
 
 CheatVision is a Windows program that **watches FPS gameplay and flags aim that
@@ -570,7 +574,7 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | piece | job |
 |---|---|
 | `ControlBar` | IMPORT, RESCAN, TOOLS, elided status text, RES/FPS pins (VOD only) |
-| `LeftRail` | centred brand, RECORD CLEAN BASELINE, SOURCE (device·profile selector, MODE/FEED/PIPE, IGNORE/BASE), DETECT, SIGNAL, INCIDENTS (centred title) |
+| `LeftRail` | brand lockup (mark + wordmark), RECORD CLEAN BASELINE, SOURCE (device·profile selector, MODE/FEED/PIPE, IGNORE/BASE), DETECT, SIGNAL, INCIDENTS (centred title) |
 | `VideoCanvas` | paints the latest rendered frame; emits `viewportResized` so the render target always matches the real canvas (a 320×180 placeholder used to be upscaled ~4× until the first window resize) |
 
 ## Layout
@@ -591,6 +595,8 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | `src/core/train_workflow.py` | optional classifier (needs torch) |
 | `src/ui/main_window.py` | composition root, worker wiring, settings persistence |
 | `src/ui/workers.py` | capture / playback / analysis / detection / render threads |
-| `src/ui/control_bar.py`, `left_rail.py`, `video_canvas.py`, `incident_queue.py`, `playback_controls.py`, `theme.py` | widgets |
+| `src/ui/control_bar.py`, `left_rail.py`, `video_canvas.py`, `incident_queue.py`, `playback_controls.py` | widgets |
+| `src/ui/theme.py`, `src/ui/branding.py` | palette + stylesheet, brand-asset loader and brand type (see `assets/brand/BRAND.md`) |
+| `assets/brand/` | the crosshair mark (`cheatvision_mark.png`, `cheatvision.ico`) and `BRAND.md` |
 | `tools/` | `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py`, `probe_capture_rate.py` (delivered/unique fps per pixel format) |
-| `tests/` | 67 unit tests |
+| `tests/` | 72 unit tests |

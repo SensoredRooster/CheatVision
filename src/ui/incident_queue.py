@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView
 
 from src.core.anti_cheat_pipeline import CheatEvent
-from src.ui.theme import ACCENT, ALERT, TEXT_MUTED
+from src.ui.theme import ALERT, TEXT_MUTED, TEXT_PRIMARY
 
 _COLUMNS = ("TIME", "CLASS", "CONF", "TRACK")
 
@@ -58,7 +58,7 @@ class IncidentQueueModel(QAbstractTableModel):
             if column == 1:
                 return QColor(ALERT)
             if column == 2:
-                return QColor(ACCENT)
+                return QColor(TEXT_PRIMARY)
             return QColor(TEXT_MUTED)
 
         return None

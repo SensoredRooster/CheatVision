@@ -24,6 +24,7 @@ from src.core.evidence import EvidenceRecorder
 from src.core.frame_source import discover_directshow_devices, pick_preferred_capture_device
 from src.core.live_overlay import PixelVisionLiveOverlay
 from src.ui.advanced_overlay import PixelVisionAdvancedOverlayEngine
+from src.ui.branding import brand_icon
 from src.ui.control_bar import ControlBar
 from src.ui.left_rail import LeftRail
 from src.ui.playback_controls import PlaybackControlsBar
@@ -44,6 +45,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = settings
         self.setWindowTitle(str(settings.get("window_title", "CheatVision")))
+        self.setWindowIcon(brand_icon())
         self.resize(1600, 950)
         self.setStyleSheet(APP_STYLESHEET)
 

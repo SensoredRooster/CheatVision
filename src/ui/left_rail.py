@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,8 +16,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.branding import TAGLINE, WORDMARK_LEFT, WORDMARK_RIGHT, brand_font, brand_pixmap
 from src.ui.incident_queue import IncidentQueueTable
-from src.ui.theme import ACCENT, ACCENT_DIM, ALERT, HAIRLINE, TEXT_MUTED, VOD_ACCENT, WARNING
+from src.ui.theme import ACCENT, ALERT, HAIRLINE, PANEL, TEXT_PRIMARY, TRACE, WARNING
 
 # Shared with the control bar so its buttons sit exactly over the rail's cards.
 RAIL_WIDTH = 268
@@ -83,14 +84,19 @@ class AimGraph(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect().adjusted(1, 1, -1, -1)
-        painter.fillRect(rect, QColor(HAIRLINE))
-        painter.setPen(QColor(TEXT_MUTED))
+        painter.setPen(QPen(QColor(HAIRLINE), 1.0))
+        painter.setBrush(QColor(PANEL))
+        painter.drawRoundedRect(rect, 4, 4)
+        painter.setBrush(Qt.NoBrush)
         font = painter.font()
         font.setPixelSize(9)
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(rect.adjusted(6, 3, -6, 0), Qt.AlignTop | Qt.AlignLeft, "STR")
+        # Legend in the series' own colours: red straightness (the thing to
+        # watch), neutral tremor (the human evidence).
         painter.setPen(QColor(ACCENT))
+        painter.drawText(rect.adjusted(6, 3, -6, 0), Qt.AlignTop | Qt.AlignLeft, "STR")
+        painter.setPen(QColor(TRACE))
         painter.drawText(rect.adjusted(6, 3, -6, 0), Qt.AlignTop | Qt.AlignRight, "TREMOR")
         if len(self._tremor) < 2:
             painter.end()
@@ -105,19 +111,19 @@ class AimGraph(QWidget):
         fill.lineTo(tremor_points[-1].x(), plot.bottom())
         fill.closeSubpath()
         gradient = QLinearGradient(plot.topLeft(), plot.bottomLeft())
-        accent = QColor(ACCENT)
-        accent.setAlpha(90)
-        dim = QColor(ACCENT_DIM)
-        dim.setAlpha(20)
-        gradient.setColorAt(0.0, accent)
-        gradient.setColorAt(1.0, dim)
+        top = QColor(TRACE)
+        top.setAlpha(70)
+        bottom = QColor(TRACE)
+        bottom.setAlpha(8)
+        gradient.setColorAt(0.0, top)
+        gradient.setColorAt(1.0, bottom)
         painter.fillPath(fill, gradient)
-        painter.setPen(QPen(QColor(ACCENT), 1.4))
+        painter.setPen(QPen(QColor(TRACE), 1.2))
         for index in range(len(tremor_points) - 1):
             painter.drawLine(tremor_points[index], tremor_points[index + 1])
         if len(self._straightness) >= 2:
             str_points = self._series_points(self._straightness, plot, 1.0)
-            painter.setPen(QPen(QColor(VOD_ACCENT), 1.4))
+            painter.setPen(QPen(QColor(ACCENT), 1.6))
             for index in range(len(str_points) - 1):
                 painter.drawLine(str_points[index], str_points[index + 1])
         painter.end()
@@ -126,8 +132,10 @@ class AimGraph(QWidget):
 class MetricRow(QWidget):
     def __init__(self, key: str, parent=None):
         super().__init__(parent)
+        # An inset strip on the card (QWidget#RailMetricRow in the stylesheet).
+        self.setObjectName("RailMetricRow")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(8)
         self._key = QLabel(key.upper())
         self._key.setObjectName("RailMetricKey")
@@ -156,6 +164,7 @@ class RailSection(QFrame):
         self.layout.setSpacing(6)
         self._heading = QLabel(title.upper())
         self._heading.setObjectName("RailCardTitle")
+        self._heading.setFont(brand_font(10, 2.0, QFont.Weight.Bold))
         if centered_title:
             self._heading.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.layout.addWidget(self._heading)
@@ -204,10 +213,42 @@ class LeftRail(QWidget):
         root.setContentsMargins(RAIL_SIDE_MARGIN, 10, RAIL_SIDE_MARGIN, 12)
         root.setSpacing(10)
 
-        brand = QLabel("CHEATVISION")
+        # Brand lockup: the crosshair mark beside the wordmark (CHEAT white,
+        # VISION red, echoing the letters on the disc), tagline under it.
+        lockup = QWidget()
+        lockup_layout = QHBoxLayout(lockup)
+        lockup_layout.setContentsMargins(0, 2, 0, 0)
+        lockup_layout.setSpacing(10)
+        lockup_layout.addStretch(1)
+        mark = QLabel()
+        mark.setObjectName("RailBrandMark")
+        mark.setFixedSize(34, 34)
+        mark.setAlignment(Qt.AlignCenter)
+        pixmap = brand_pixmap(34, self.devicePixelRatioF())
+        if not pixmap.isNull():
+            mark.setPixmap(pixmap)
+        lockup_layout.addWidget(mark, 0)
+        words = QWidget()
+        words_layout = QVBoxLayout(words)
+        words_layout.setContentsMargins(0, 0, 0, 0)
+        words_layout.setSpacing(0)
+        brand = QLabel(
+            f'<span style="color:{TEXT_PRIMARY}">{WORDMARK_LEFT}</span>'
+            f'<span style="color:{ACCENT}">{WORDMARK_RIGHT}</span>'
+        )
         brand.setObjectName("RailBrand")
-        brand.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        root.addWidget(brand)
+        brand.setTextFormat(Qt.RichText)
+        brand.setFont(brand_font(17, 3.5))
+        brand.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        tagline = QLabel(TAGLINE)
+        tagline.setObjectName("RailBrandSub")
+        tagline.setFont(brand_font(8, 2.5, QFont.Weight.Bold))
+        tagline.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        words_layout.addWidget(brand)
+        words_layout.addWidget(tagline)
+        lockup_layout.addWidget(words, 0)
+        lockup_layout.addStretch(1)
+        root.addWidget(lockup)
 
         # Recording control lives in the rail, right under the brand.
         self.record_baseline_btn = QPushButton("RECORD CLEAN BASELINE")
@@ -307,6 +348,7 @@ class LeftRail(QWidget):
         self.signal = RailSection("Signal")
         self._signal_status = QLabel("ok")
         self._signal_status.setObjectName("RailStatusOk")
+        self._signal_status.setFont(brand_font(12, 2.0, QFont.Weight.Bold))
         self._signal_str = MetricRow("Str")
         self._signal_tremor = MetricRow("Tremor")
         self._sparkline = AimGraph(self)

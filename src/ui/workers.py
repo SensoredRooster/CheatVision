@@ -17,8 +17,10 @@ _GATE_CHIP_FONT = cv2.FONT_HERSHEY_SIMPLEX
 _GATE_CHIP_FONT_SCALE = 0.45
 _GATE_CHIP_THICKNESS = 1
 _GATE_CHIP_PAD = 6
-_GATE_CHIP_TEXT_COLOR = (90, 220, 120)
-_GATE_CHIP_BG_COLOR = (10, 16, 12)
+# BGR, matching the rail: charcoal chip, hairline edge, muted text.
+_GATE_CHIP_TEXT_COLOR = (212, 206, 200)
+_GATE_CHIP_BG_COLOR = (27, 24, 21)
+_GATE_CHIP_BORDER_COLOR = (54, 48, 42)
 
 
 def _downscale(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
@@ -68,7 +70,7 @@ def _with_gate_chip(frame: np.ndarray, reason: str) -> np.ndarray:
     x2 = min(width - 1, max(x1, x1 + text_w + _GATE_CHIP_PAD * 2))
     y2 = min(height - 1, max(y1, y1 + text_h + baseline + _GATE_CHIP_PAD * 2))
     cv2.rectangle(canvas, (x1, y1), (x2, y2), _GATE_CHIP_BG_COLOR, -1)
-    cv2.rectangle(canvas, (x1, y1), (x2, y2), (35, 55, 40), 1)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), _GATE_CHIP_BORDER_COLOR, 1)
     text_x = min(max(x1 + _GATE_CHIP_PAD, 0), max(0, width - 1))
     text_y = min(max(y1 + _GATE_CHIP_PAD + text_h, 0), max(0, height - 1))
     cv2.putText(

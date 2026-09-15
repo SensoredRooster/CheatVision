@@ -180,17 +180,19 @@ class EvidenceRecorder:
         sy = h / max(1, int(asize[1]))
         point = tele.get("crosshair_point") or [w // 2, h // 2]
         cx, cy = int(point[0] * sx), int(point[1] * sy)
+        # BGR, following the app palette: steel aim path, alert-red reticle,
+        # charcoal text chips (assets/brand/BRAND.md).
         path = tele.get("path") or []
         if len(path) >= 2:
             # Path is relative displacement; anchor its end at the reticle.
             end = path[-1]
             pts = [(int(cx + (p[0] - end[0]) * sx), int(cy + (p[1] - end[1]) * sy)) for p in path]
             for a, b in zip(pts, pts[1:]):
-                cv2.line(frame, a, b, (60, 220, 255), 2, cv2.LINE_AA)
-            cv2.circle(frame, pts[0], 5, (60, 220, 255), -1, cv2.LINE_AA)
-        cv2.circle(frame, (cx, cy), 10, (80, 60, 255), 2, cv2.LINE_AA)
-        cv2.line(frame, (cx - 16, cy), (cx + 16, cy), (80, 60, 255), 1, cv2.LINE_AA)
-        cv2.line(frame, (cx, cy - 16), (cx, cy + 16), (80, 60, 255), 1, cv2.LINE_AA)
+                cv2.line(frame, a, b, (227, 222, 217), 2, cv2.LINE_AA)
+            cv2.circle(frame, pts[0], 5, (227, 222, 217), -1, cv2.LINE_AA)
+        cv2.circle(frame, (cx, cy), 10, (87, 77, 255), 2, cv2.LINE_AA)
+        cv2.line(frame, (cx - 16, cy), (cx + 16, cy), (87, 77, 255), 1, cv2.LINE_AA)
+        cv2.line(frame, (cx, cy - 16), (cx, cy + 16), (87, 77, 255), 1, cv2.LINE_AA)
 
         lines = [
             f"{event.cheat_category}  conf {event.confidence_score:.2f}",
@@ -204,8 +206,8 @@ class EvidenceRecorder:
         y = 26
         for text in lines:
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-            cv2.rectangle(frame, (10, y - th - 8), (16 + tw, y + 6), (10, 16, 12), -1)
-            cv2.putText(frame, text, (13, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (90, 220, 120), 1, cv2.LINE_AA)
+            cv2.rectangle(frame, (10, y - th - 8), (16 + tw, y + 6), (27, 24, 21), -1)
+            cv2.putText(frame, text, (13, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (212, 206, 200), 1, cv2.LINE_AA)
             y += th + 16
         return frame
 
