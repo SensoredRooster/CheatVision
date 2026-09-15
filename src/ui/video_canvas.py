@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from src.core.anti_cheat_pipeline import FrameContext
 from src.ui.branding import brand_pixmap
-from src.ui.theme import CANVAS_IDLE_COLOR, TEXT_MUTED
+from src.ui.theme import CANVAS_IDLE_COLOR
 
 
 class VideoCanvas(QWidget):
@@ -15,6 +15,10 @@ class VideoCanvas(QWidget):
     Holds references to both the full FrameContext and the rendered numpy frame
     because QImage(Format_BGR888) wraps the backing numpy buffer without
     copying it.
+
+    Whenever there is no picture to show (start-up, waiting for a device, a
+    VOD loading or finished, a capture error) the canvas shows the brand mark
+    and nothing else; the reason lives in the status text of the control bar.
 
     Emits ``viewportResized(w, h)`` whenever its own geometry changes so the
     render worker can fit frames to the real canvas. The main window's
@@ -32,18 +36,12 @@ class VideoCanvas(QWidget):
         self._ctx: FrameContext | None = None
         self._frame_buffer = None
         self._image: QImage | None = None
-        self._idle_text = "No capture device detected — Mount a gameplay recording to begin"
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         size = event.size()
         if size.width() > 0 and size.height() > 0:
             self.viewportResized.emit(size.width(), size.height())
-
-    def set_idle_text(self, text: str) -> None:
-        self._idle_text = text
-        if self._image is None:
-            self.update()
 
     def set_frame(self, ctx: FrameContext, frame) -> None:
         self._ctx = ctx
@@ -53,10 +51,15 @@ class VideoCanvas(QWidget):
         self.update()
 
     def clear_frame(self) -> None:
+        """Back to the brand mark."""
         self._ctx = None
         self._frame_buffer = None
         self._image = None
         self.update()
+
+    @property
+    def is_idle(self) -> bool:
+        return self._image is None
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -72,27 +75,14 @@ class VideoCanvas(QWidget):
         painter.end()
 
     def _paint_idle(self, painter: QPainter) -> None:
-        """The brand mark centred with the status line under it: the app's
-        face while nothing is playing (start-up, waiting for a device, a VOD
-        loading, a capture error)."""
         rect = self.rect()
-        size = int(max(48, min(rect.width(), rect.height()) * 0.22))
+        size = int(max(48, min(rect.width(), rect.height()) * 0.26))
         mark = brand_pixmap(size, painter.device().devicePixelRatioF())
-        text_top = rect.center().y() - 8
-        if not mark.isNull():
-            logical_w = int(mark.width() / mark.devicePixelRatio())
-            logical_h = int(mark.height() / mark.devicePixelRatio())
-            x = rect.center().x() - logical_w // 2
-            y = rect.center().y() - logical_h - 4
-            painter.drawPixmap(x, y, mark)
-            text_top = rect.center().y() + 14
-        painter.setPen(QColor(TEXT_MUTED))
-        font = painter.font()
-        font.setPixelSize(12)
-        font.setBold(True)
-        painter.setFont(font)
-        text_rect = QRect(rect.left() + 24, text_top, max(1, rect.width() - 48), 48)
-        painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self._idle_text)
+        if mark.isNull():
+            return
+        logical_w = int(mark.width() / mark.devicePixelRatio())
+        logical_h = int(mark.height() / mark.devicePixelRatio())
+        painter.drawPixmap(rect.center().x() - logical_w // 2, rect.center().y() - logical_h // 2, mark)
 
     def _letterbox_rect(self, image_size: QSize, widget_size: QSize) -> QRect:
         if image_size.width() <= 0 or image_size.height() <= 0:

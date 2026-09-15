@@ -77,8 +77,11 @@ What happens on start (takes ~5 s):
 3. The picture appears. The top bar reads e.g.
    `LIVE · 2560×1440 @ 144 · CAP_FFMPEG · HDMI GAME · STANDARD`.
 
-If the canvas says **Waiting for capture device** — no signal is reaching the
-card. Check the HDMI cable and that the gaming PC/console is outputting.
+If the canvas shows only the CheatVision mark and the status text says
+**Waiting for capture device** — no signal is reaching the card. Check the HDMI
+cable and that the gaming PC/console is outputting. (The canvas never carries
+text: whenever nothing is playing it shows the mark, and the reason is in the
+status text at the top.)
 
 ---
 
@@ -117,12 +120,12 @@ card. Check the HDMI cable and that the gaming PC/console is outputting.
 
 | row | meaning |
 |---|---|
-| source selector | **device · profile** in one pick, e.g. `HD60 X · HDMI GAME`, `GC573 1 · HDMI GAME` or `OBS VCam · STREAM WIN` — the device part is **your** hardware's own name as Windows reports it, trimmed of vendor boilerplate to fit. The device is *what to read* (capture card, or another app's **Virtual Camera**, see §5); the profile is *which screen regions to ignore* (see §6). Hover it for the full device name. Remembered across restarts. |
+| source selector | **one entry per input**, by its own name: every DirectShow video device Windows reports (capture card, another app's **Virtual Camera** — see §5 — or a webcam), trimmed of vendor boilerplate to fit, e.g. `GC573 1`, `HD60 X`, `StreamCenter VCam`, `BRIO`; plus **Browser window**, a screen grab of the largest Twitch / Kick / YouTube tab. Hover it for the full device name. Remembered across restarts. |
+| **MASK** | which regions of the picture the analyser ignores: **GAME** (facecam corner, the player's own weapon) or **STREAM** (top and bottom stream chrome, chat column, facecam) — see §6. Applies immediately, no capture restart. Browser window is always STREAM. Hover it for how many regions are being ignored right now. |
 | **MODE** | a picker. **AUTO** tests the device's modes, keeps the fastest one that streams cleanly, and shows what it negotiated (`AUTO · 2560×1440 @ 144`). The other entries are **only the modes this device advertised** at the last scan — nothing generic. Pick one to restart capture on it; if the device rejects it, capture falls back to AUTO and the status text says so. Remembered across restarts. |
 | **FEED** | what the device is **really delivering**: `71 fps (60 new)` = 71 frames/s handed over, 60 of them new pictures. This is the honest number — see §7. Turns red if starved. |
 | **ANALYSIS** | how many new pictures a second the aim analyser scores, and what fraction of the feed that is: `20 Hz · 1 in 3` on a 60 fps feed, `21 Hz · 1 in 7` on 144, `20 Hz · 1 in 12` on 240. The stride follows the feed so every source is judged at the same cadence — see §7. |
 | **PIPE** | how frames get in: `CAP_FFMPEG` (card), `VIRTUAL_CAM`, `GDI_BROWSER`, `MSS` (screen), `VOD` |
-| IGNORE | how many ignore rectangles the profile is applying |
 | BASE | `idle` or `rec` while a baseline is recording |
 
 ### DETECT card
@@ -167,7 +170,7 @@ double-click also jumps the video to that frame.
 ## 4. Review a saved video (the easiest way to start)
 
 1. Click **IMPORT**, pick an `.mp4`.
-2. The profile switches to `VOD FILE` and YOLO turns on.
+2. MASK switches to `STREAM` (a recording has its overlays baked in; flip it to `GAME` for raw gameplay) and YOLO turns on.
 3. Playback controls appear under the video: ⏸/▶ and a scrub bar.
 4. Watch INCIDENTS fill in. Double-click any row to jump there.
 5. Judge each flag yourself — CheatVision *points at* suspicious motion; it does
@@ -189,8 +192,7 @@ The fix is built in:
 
 1. In OBS (or Streaming Center / Streamlabs), select the card as the source and turn on its
    **Virtual Camera** output. Record/stream as usual.
-2. In CheatVision, SOURCE → selector → that app's **… VCam · HDMI GAME** entry (e.g. `OBS VCam · HDMI GAME`, `StreamCenter VCam · HDMI GAME`)
-   (or *OBS Virtual Camera*).
+2. In CheatVision, SOURCE → that app's **… VCam** entry (e.g. `OBS VCam`, `StreamCenter VCam`).
 3. PIPE shows `VIRTUAL_CAM`, FEED shows `60 fps`. Both apps now run together.
 
 A virtual camera is a **software feed at its host app's rate**. Streaming
@@ -205,17 +207,21 @@ CheatVision says so after 4 s instead of showing a frozen picture.
 
 ---
 
-## 6. Profiles — telling the analyser what to ignore
+## 6. MASK — telling the analyser what to ignore
 
-The **profile** half of the SOURCE selector chooses which parts of the screen are *not* gameplay:
+**SOURCE** is *where the picture comes from*; **MASK** is *which parts of it are
+not gameplay*. They are separate pickers, so every input is listed once.
 
-| profile | pick it when | ignores |
+| MASK | pick it when | ignores |
 |---|---|---|
-| `HDMI GAME` | capture card straight from the game | facecam corner (bottom-right by default), player's own weapon |
-| `STREAM WINDOW` | watching a Twitch/Kick/YouTube stream in a browser | top and bottom stream chrome, chat column on the right, facecam |
-| `VOD FILE` | a recorded stream with overlays baked in | same as STREAM WINDOW |
+| `GAME` | the feed is the game itself (card or virtual camera straight from the gaming PC) | facecam corner (bottom-right by default), player's own weapon |
+| `STREAM` | the feed is a stream page: Browser window, a recorded stream, or a card/virtual camera carrying a browser | top and bottom stream chrome, chat column on the right, facecam |
 
-Picking a different entry while live restarts capture once (a couple of seconds), even if only the profile changed. Importing a VOD switches the profile to `VOD FILE` automatically.
+MASK applies immediately with no capture restart. **Browser window** forces
+`STREAM`. Importing a VOD switches MASK to `STREAM`; flip it to `GAME` for a
+raw gameplay recording. The live choice is remembered; the VOD choice lasts the
+session. (The status text shows the mask in force as `HDMI GAME`, `STREAM
+WINDOW` or `VOD FILE`; the last two are the same mask.)
 
 The **game profile** (`config/settings.json` → `game_profile`: `warzone` or
 `generic`) sets where the HUD is (minimap, ammo) so it is masked out, and where
@@ -398,7 +404,7 @@ The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
 
 1. Plug in / power the source. Start OBS / Streaming Center **before** CheatVision if you want to record.
 2. `python main.py`.
-3. SOURCE → pick your capture card's `… · HDMI GAME` entry, or its `… VCam · …` entry if you're recording.
+3. SOURCE → pick your capture card, or its `… VCam` entry if you're recording. MASK `GAME`.
 4. Confirm: top bar `LIVE · …`, GATE `live` during play, FEED shows as many new pictures as your HDMI signal carries (60 on a 60 Hz signal, 144 on 144), ANALYSIS about 20 Hz.
 5. Play. Watch INCIDENTS. Double-check anything flagged by eye.
 6. Optional: RECORD CLEAN BASELINE during matches you know are legit.
@@ -574,8 +580,8 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | piece | job |
 |---|---|
 | `ControlBar` | IMPORT, RESCAN, TOOLS, elided status text, RES/FPS pins (VOD only) |
-| `LeftRail` | brand lockup (mark + wordmark), RECORD CLEAN BASELINE, SOURCE (device·profile selector, MODE/FEED/PIPE, IGNORE/BASE), DETECT, SIGNAL, INCIDENTS (centred title) |
-| `VideoCanvas` | paints the latest rendered frame; emits `viewportResized` so the render target always matches the real canvas (a 320×180 placeholder used to be upscaled ~4× until the first window resize) |
+| `LeftRail` | brand lockup (mark + wordmark), RECORD CLEAN BASELINE / RECORD SESSION, SOURCE (one entry per input + Browser window; MODE, MASK, FEED, ANALYSIS, PIPE, BASE), DETECT, SIGNAL, INCIDENTS (centred title) |
+| `VideoCanvas` | paints the latest rendered frame, or the brand mark whenever nothing is playing (start-up, waiting for a device, VOD loading or finished, capture error — the reason is in the status text); emits `viewportResized` so the render target always matches the real canvas (a 320×180 placeholder used to be upscaled ~4× until the first window resize) |
 
 ## Layout
 
@@ -599,4 +605,4 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | `src/ui/theme.py`, `src/ui/branding.py` | palette + stylesheet, brand-asset loader and brand type (see `assets/brand/BRAND.md`) |
 | `assets/brand/` | the crosshair mark (`cheatvision_mark.png`, `cheatvision.ico`) and `BRAND.md` |
 | `tools/` | `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py`, `probe_capture_rate.py` (delivered/unique fps per pixel format) |
-| `tests/` | 72 unit tests |
+| `tests/` | 82 unit tests |

@@ -21,7 +21,12 @@ from src.core.anti_cheat_pipeline import SOURCE_PROFILE_LABELS, AntiCheatPipelin
 from src.core.dataset_exporter import PixelVisionDatasetExporter
 from src.core.event_logger import EventLogger
 from src.core.evidence import EvidenceRecorder
-from src.core.frame_source import discover_directshow_devices, pick_preferred_capture_device
+from src.core.frame_source import (
+    BROWSER_WINDOW_DEVICE,
+    discover_directshow_devices,
+    is_browser_window_device,
+    pick_preferred_capture_device,
+)
 from src.core.live_overlay import PixelVisionLiveOverlay
 from src.ui.advanced_overlay import PixelVisionAdvancedOverlayEngine
 from src.ui.branding import brand_icon
@@ -82,6 +87,10 @@ class MainWindow(QMainWindow):
 
         self._view_mode = "standard"
         self._stream_mode = "live"
+        # Mask used while a VOD is mounted. Kept apart from the saved live mask
+        # (settings["source_profile"]) so importing a stream recording never
+        # leaks STREAM masks back onto the capture card afterwards.
+        self._vod_mask_profile = "vod_file"
         self._last_signal_paint_time = 0.0
         self._last_slider_paint_time = 0.0
         self._latest_telemetry: dict = {}
@@ -136,6 +145,7 @@ class MainWindow(QMainWindow):
         self.left_rail.recordBaselineToggled.connect(self._on_record_baseline_toggled)
         self.left_rail.recordSessionToggled.connect(self._on_record_session_toggled)
         self.left_rail.sourceSelected.connect(self._on_source_selected)
+        self.left_rail.maskSelected.connect(self._on_mask_selected)
         self.left_rail.captureModeSelected.connect(self._on_capture_mode_changed)
         self.left_rail.incident_table.seekRequested.connect(self._on_seek_requested)
         self.left_rail.incident_table.incidentActivated.connect(self._on_incident_activated)
@@ -162,17 +172,17 @@ class MainWindow(QMainWindow):
 
         self.control_bar.set_stream_mode(self._stream_mode)
         self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
-        self.left_rail.set_source_profile(str(self.settings.get("source_profile", "hdmi_game")))
+        self.left_rail.set_mask_profile(self._live_mask_profile())
         self._update_signal_card()
 
     # ------------------------------------------------------------------
     # Startup / device lifecycle
     # ------------------------------------------------------------------
     def _auto_start_capture(self) -> None:
-        devices = discover_directshow_devices()
+        devices = self._list_inputs()
         preferred = self._choose_startup_device(devices)
         self._known_devices = devices
-        self.left_rail.set_devices(devices, str(preferred.get("name", "")) if preferred else "", str(self.settings.get("source_profile", "hdmi_game")))
+        self.left_rail.set_devices(devices, str(preferred.get("name", "")) if preferred else "")
 
         self._capture_worker, self._capture_thread = self._make_capture_worker(preferred)
 
@@ -213,6 +223,12 @@ class MainWindow(QMainWindow):
         self._wire_capture_worker()
         self._launch_capture(preferred)
 
+    @staticmethod
+    def _list_inputs() -> list[dict]:
+        """Every DirectShow video device Windows reports, plus the Browser
+        window pseudo-input (always available: it needs no device)."""
+        return list(discover_directshow_devices()) + [dict(BROWSER_WINDOW_DEVICE)]
+
     def _make_capture_worker(self, device: dict | None) -> tuple[CaptureWorker, QThread]:
         settings = copy.deepcopy(self.settings)
         settings["capture_device_name"] = str(device.get("name", "")) if device else ""
@@ -236,18 +252,16 @@ class MainWindow(QMainWindow):
         self._capture_thread.started.connect(self._capture_worker.start)
 
     def _launch_capture(self, device: dict | None) -> None:
-        browser = str(self.settings.get("source_profile", "hdmi_game")) == "stream_window"
-        if browser:
-            self.video_canvas.set_idle_text("Waiting for browser window...")
+        # The canvas shows the brand mark until a picture arrives; the reason
+        # nothing is playing lives in the status text only.
+        if is_browser_window_device(device):
             self.status_label.setText("Starting capture: browser window")
             self._capture_thread.start()
         elif device:
-            self.video_canvas.set_idle_text("Waiting for capture device...")
             self.status_label.setText(f"Starting capture: {device.get('label', 'device')}")
             self._capture_thread.start()
         else:
-            self.video_canvas.set_idle_text("No capture device detected — Mount a gameplay recording to begin")
-            self.status_label.setText("No capture device detected")
+            self.status_label.setText("No capture device detected — IMPORT a gameplay recording to begin")
 
     def _stop_baseline_safe(self) -> None:
         try:
@@ -313,9 +327,9 @@ class MainWindow(QMainWindow):
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
         self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
-        if str(self.settings.get("source_profile", "hdmi_game")) == "hdmi_game":
-            self._apply_source_profile("stream_window")
-        self._update_signal_card()
+        # A recorded stream has its chrome baked in: STREAM masks by default,
+        # switchable in the MASK picker if the file is raw gameplay.
+        self._apply_mask(self._vod_mask_profile)
 
         self._mounted_vod_name = Path(path).name
         self._flagged_track_ids = OrderedDict()
@@ -327,7 +341,6 @@ class MainWindow(QMainWindow):
 
         self.playback_controls.show()
         self.playback_controls.reset_play_state()
-        self.video_canvas.set_idle_text("Loading VOD...")
         self.status_label.setText(f"Mounted VOD: {self._mounted_vod_name}")
         self._playback_thread.start()
 
@@ -387,7 +400,11 @@ class MainWindow(QMainWindow):
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
         self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
-        self._update_signal_card()
+        if is_browser_window_device(device):
+            # A browser tab is a stream page by definition.
+            self._apply_mask("stream_window", locked=True)
+        else:
+            self._apply_mask(self._live_mask_profile())
         self._flagged_track_ids = OrderedDict()
         if self._render_worker is not None:
             self._render_worker.set_flagged_track_ids(())
@@ -397,11 +414,11 @@ class MainWindow(QMainWindow):
         self._launch_capture(device)
 
     def _on_rescan_devices_requested(self) -> None:
-        devices = discover_directshow_devices()
+        devices = self._list_inputs()
         self._known_devices = devices
         preferred = self._choose_startup_device(devices)
         preferred_name = str(preferred.get("name", "")) if preferred else ""
-        self.left_rail.set_devices(devices, preferred_name, str(self.settings.get("source_profile", "hdmi_game")))
+        self.left_rail.set_devices(devices, preferred_name)
 
         capture_alive = self._capture_thread is not None and self._capture_thread.isRunning()
         if preferred_name == self._current_device_name and capture_alive:
@@ -411,37 +428,58 @@ class MainWindow(QMainWindow):
         self._restart_capture(preferred)
 
     def _choose_startup_device(self, devices: list[dict]) -> dict | None:
-        """The user's saved pick if it is present, else the best available."""
+        """The user's saved pick if it is present, else the best available
+        real device. The Browser window input is never auto-picked: with no
+        browser open it would only report an error where a card would work."""
+        if str(self.settings.get("capture_device_kind", "") or "").strip().lower() == str(
+            BROWSER_WINDOW_DEVICE["kind"]
+        ).lower():
+            return next((d for d in devices if is_browser_window_device(d)), dict(BROWSER_WINDOW_DEVICE))
         wanted = str(self.settings.get("capture_device_name", "") or "").strip().lower()
         if wanted:
             for device in devices:
                 if str(device.get("name", "")).strip().lower() == wanted:
                     return device
-        return pick_preferred_capture_device(devices)
+        return pick_preferred_capture_device([d for d in devices if not is_browser_window_device(d)])
 
-    def _on_source_selected(self, device_name: str, profile: str) -> None:
-        """SOURCE selector: a (device, profile) pair. Apply both, restart capture once."""
+    def _live_mask_profile(self) -> str:
+        """The saved mask for live devices; the VOD-only id is folded into STREAM."""
+        profile = str(self.settings.get("source_profile", "hdmi_game") or "hdmi_game")
+        return "hdmi_game" if profile == "hdmi_game" else "stream_window"
+
+    def _apply_mask(self, profile: str, *, locked: bool = False) -> None:
+        """Put an ignore-rect set in force on the pipeline, live, no restart."""
+        self.pipeline.set_source_profile(profile)
+        self.left_rail.set_mask_profile(profile, locked=locked)
+        self.status_label.setText(self._status_text_with_mode())
+        self._update_signal_card()
+
+    def _on_mask_selected(self, profile: str) -> None:
+        """MASK picker. Applies immediately; only the live choice is remembered."""
+        if self._stream_mode == "vod":
+            self._vod_mask_profile = "hdmi_game" if profile == "hdmi_game" else "vod_file"
+            self._apply_mask(self._vod_mask_profile)
+            return
+        if is_browser_window_device(self._current_device):
+            self._apply_mask("stream_window", locked=True)
+            return
+        self.settings["source_profile"] = profile
+        self._persist_setting("source_profile", profile)
+        self._apply_mask(profile)
+
+    def _on_source_selected(self, device_name: str) -> None:
+        """SOURCE selector: one input. Remember it and restart capture on it."""
         device = next((d for d in self._known_devices if str(d.get("name", "")) == device_name), None)
         if device is None:
             return
-        previous_profile = str(self.settings.get("source_profile", "hdmi_game"))
-        if profile != previous_profile:
-            self.settings["source_profile"] = profile
-            self.pipeline.set_source_profile(profile)
-            self._persist_setting("source_profile", profile)
-            self._update_signal_card()
         self.settings["capture_device_name"] = device_name
         self.settings["capture_device_kind"] = str(device.get("kind", ""))
         self._persist_setting("capture_device_name", device_name)
         self._persist_setting("capture_device_kind", str(device.get("kind", "")))
         capture_alive = self._capture_thread is not None and self._capture_thread.isRunning()
-        if device_name == self._current_device_name and profile == previous_profile and capture_alive:
+        if device_name == self._current_device_name and capture_alive:
             return
-        if self._stream_mode != "live" and device_name == self._current_device_name:
-            # Reviewing a VOD: the profile change applies to the pipeline; no capture restart.
-            self.status_label.setText(self._status_text_with_mode())
-            return
-        self.status_label.setText(f"Switching source: {device.get('label', device_name)} · {SOURCE_PROFILE_LABELS.get(profile, profile)}")
+        self.status_label.setText(f"Switching source: {device.get('label', device_name)}")
         self._restart_capture(device)
 
     def _persist_setting(self, key: str, value) -> None:
@@ -535,13 +573,6 @@ class MainWindow(QMainWindow):
         else:
             self.body_splitter.setSizes([0, max(320, total)])
 
-    def _apply_source_profile(self, profile: str) -> None:
-        self.settings["source_profile"] = profile
-        self.pipeline.set_source_profile(profile)
-        self.left_rail.set_source_profile(profile)
-        self.status_label.setText(self._status_text_with_mode())
-        self._update_signal_card()
-
     def _update_detection_enabled(self) -> None:
         if self._detection_worker is None:
             return
@@ -591,7 +622,7 @@ class MainWindow(QMainWindow):
                 f" · ⚠ manual {override['width']}×{override['height']}@{override['fps']} not supported, auto-calibrated instead"
             )
         self.status_label.setText(self._status_text_with_mode())
-        if str(self.settings.get("source_profile", "hdmi_game")) == "stream_window":
+        if is_browser_window_device(self._current_device):
             device_label = "Browser window"
         else:
             device_label = (
@@ -614,9 +645,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_capture_error(self, message: str) -> None:
+        # Canvas back to the brand mark; the message stays in the status text.
         self.video_canvas.clear_frame()
         self.status_label.setText(f"CAPTURE ERROR: {message}")
-        self.video_canvas.set_idle_text(f"Capture error: {message}")
 
     @Slot(bool)
     def _on_capture_stream_frozen(self, is_frozen: bool) -> None:
@@ -635,7 +666,6 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_waiting_for_capture(self) -> None:
         self.video_canvas.clear_frame()
-        self.video_canvas.set_idle_text("Waiting for capture device")
         self.status_label.setText("Waiting for capture device")
 
     @Slot(float, float, bool)
@@ -705,6 +735,8 @@ class MainWindow(QMainWindow):
         filename = getattr(self, "_mounted_vod_name", "VOD")
         self._vod_status_text = f"VOD · {filename} · finished"
         self.status_label.setText(self._status_text_with_mode())
+        # Nothing is playing any more: back to the brand mark.
+        self.video_canvas.clear_frame()
 
     @Slot(str)
     def _on_playback_error(self, message: str) -> None:
@@ -746,13 +778,9 @@ class MainWindow(QMainWindow):
             tracks = 0
         gate = self.pipeline.gate_reason()
         self.left_rail.set_detect(yolo_on=yolo_on, tracks=tracks, gate=gate)
-        profile = SOURCE_PROFILE_LABELS.get(
-            str(self.settings.get("source_profile", "hdmi_game")),
-            "HDMI GAME",
-        )
         ignore_count = int(telemetry.get("ignore_rect_count") or getattr(self.pipeline, "ignore_rect_count", 0) or 0)
         baseline = "rec" if self.dataset_exporter.is_recording_baseline else "idle"
-        self.left_rail.set_profile(profile, ignore_count, baseline)
+        self.left_rail.set_profile(self.pipeline.source_profile, ignore_count, baseline)
 
     # ------------------------------------------------------------------
     # Status text helpers
@@ -770,7 +798,7 @@ class MainWindow(QMainWindow):
         }.get(self._view_mode, self._view_mode.upper())
 
     def _profile_status_name(self) -> str:
-        profile = str(self.settings.get("source_profile", "hdmi_game"))
+        profile = str(self.pipeline.source_profile)
         return SOURCE_PROFILE_LABELS.get(profile, profile.upper())
 
     def _status_text_with_mode(self) -> str:

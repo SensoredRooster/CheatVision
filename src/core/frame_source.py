@@ -31,6 +31,22 @@ _BROWSER_SKIP = ("pixelvision", "cheatvision")
 _BROWSER_MIN_WIDTH = 400
 _BROWSER_MIN_HEIGHT = 300
 
+# The one input that is not a DirectShow device: a screen grab of the largest
+# browser window (a Twitch / Kick / YouTube tab). It is listed in the SOURCE
+# selector like any other input and chosen by its kind, so no device entry
+# ever doubles as "browser capture" the way the STREAM WINDOW profile used to.
+BROWSER_WINDOW_KIND = "Browser Window"
+BROWSER_WINDOW_DEVICE: dict[str, str | int] = {
+    "label": "Browser window (screen capture)",
+    "name": "Browser window",
+    "index": 0,
+    "kind": BROWSER_WINDOW_KIND,
+}
+
+
+def is_browser_window_device(device: dict | None) -> bool:
+    return device is not None and str(device.get("kind", "")).strip().lower() == BROWSER_WINDOW_KIND.lower()
+
 
 def _find_browser_window() -> tuple[int, dict[str, int]] | None:
     if sys.platform != "win32":
@@ -799,7 +815,10 @@ class FrameSource:
         self._card_pixel_format = normalize_pixel_format(settings.get("capture_pixel_format"))
         self.camera_index = int(settings.get("camera_index", 0))
         self.settings = settings.copy()
-        self._follow_browser = str(settings.get("source_profile", "hdmi_game")) == "stream_window"
+        # Screen-grab a browser window only when that pseudo-input was picked.
+        # The source profile is purely which regions to ignore; it no longer
+        # decides what is read.
+        self._follow_browser = self._capture_kind == BROWSER_WINDOW_KIND.lower()
         self._browser_hwnd = 0
         self.monitor_index = int(settings.get("screen_monitor_index", 1))
         self.region = settings.get("screen_region")

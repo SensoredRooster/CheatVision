@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.core.frame_source import is_browser_window_device
 from src.ui.branding import WORDMARK_LEFT, WORDMARK_RIGHT, brand_font, brand_pixmap
 from src.ui.incident_queue import IncidentQueueTable
 from src.ui.theme import ACCENT, ALERT, HAIRLINE, PANEL, TEXT_PRIMARY, TRACE, WARNING
@@ -24,7 +25,10 @@ from src.ui.theme import ACCENT, ALERT, HAIRLINE, PANEL, TEXT_PRIMARY, TRACE, WA
 RAIL_WIDTH = 268
 RAIL_SIDE_MARGIN = 12
 
-_PROFILE_LABELS = {"hdmi_game": "HDMI GAME", "stream_window": "STREAM WIN", "vod_file": "VOD FILE"}
+# MASK picker: which regions of the picture the analyser ignores. GAME is a
+# bare game feed (facecam corner, own weapon); STREAM is a stream page (top
+# and bottom chrome, chat column, facecam). vod_file has the STREAM masks.
+_MASK_ITEMS: tuple[tuple[str, str], ...] = (("GAME", "hdmi_game"), ("STREAM", "stream_window"))
 
 
 def _short_device_name(name: str) -> str:
@@ -180,8 +184,10 @@ class LeftRail(QWidget):
     analyzeToggled = Signal(bool)
     recordBaselineToggled = Signal()
     recordSessionToggled = Signal()
-    # (device_name, source_profile) chosen in the SOURCE selector.
-    sourceSelected = Signal(str, str)
+    # Device name chosen in the SOURCE selector (one entry per input).
+    sourceSelected = Signal(str)
+    # Source profile chosen in the MASK picker: "hdmi_game" or "stream_window".
+    maskSelected = Signal(str)
     # (width, height, fps) pinned in the MODE picker; (0, 0, 0) means AUTO.
     captureModeSelected = Signal(int, int, int)
 
@@ -192,9 +198,15 @@ class LeftRail(QWidget):
         "rejects it, capture falls back to AUTO and the status text says so."
     )
     _SELECTOR_HELP = (
-        "Video device + profile. The capture card serves one app at a time; pick a Virtual "
-        "Camera entry (OBS / Streaming Center / Streamlabs) to analyse while that app records. The profile "
-        "part (HDMI GAME / STREAM WINDOW / VOD FILE) decides which screen regions are ignored."
+        "Where the picture comes from: one entry per input, by its own name. Capture cards, "
+        "virtual cameras (OBS / Streaming Center / Streamlabs, so that app can record while "
+        "CheatVision analyses) and webcams as Windows lists them, plus Browser window (a screen "
+        "grab of a Twitch / Kick / YouTube tab). What to ignore on the picture is the MASK below."
+    )
+    _MASK_HELP = (
+        "Which regions of the picture the analyser ignores. GAME: a bare game feed (facecam "
+        "corner, the player's own weapon). STREAM: a stream page (top and bottom chrome, chat "
+        "column, facecam). Applies immediately, no capture restart. Browser window is always STREAM."
     )
     _ANALYSIS_HELP = (
         "How many new pictures a second the aim analyser scores, and what fraction of the feed "
@@ -277,6 +289,26 @@ class LeftRail(QWidget):
         self.source_combo.setMinimumContentsLength(18)
         self.source_combo.setToolTip(self._SELECTOR_HELP)
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        # MASK is the other half of "what am I looking at": the ignore-rect
+        # set for the picture. It used to be multiplied into the selector as
+        # a profile suffix on every device (three entries per input); now it
+        # is one picker that applies live.
+        self._mask_row = QWidget()
+        mask_layout = QHBoxLayout(self._mask_row)
+        mask_layout.setContentsMargins(0, 0, 0, 0)
+        mask_layout.setSpacing(8)
+        mask_key = QLabel("MASK")
+        mask_key.setObjectName("RailMetricKey")
+        self.mask_combo = QComboBox()
+        self.mask_combo.setObjectName("SourceCombo")
+        self.mask_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.mask_combo.setMinimumContentsLength(14)
+        self.mask_combo.setToolTip(self._MASK_HELP)
+        for label, profile in _MASK_ITEMS:
+            self.mask_combo.addItem(label, profile)
+        self.mask_combo.currentIndexChanged.connect(self._on_mask_changed)
+        mask_layout.addWidget(mask_key, 0)
+        mask_layout.addWidget(self.mask_combo, 1)
         # MODE is a picker, not a readout: AUTO (labelled with whatever
         # calibration negotiated) plus only the modes this device advertised
         # when it was opened. Nothing generic is ever offered.
@@ -305,19 +337,18 @@ class LeftRail(QWidget):
         self._source_analysis = MetricRow("Analysis")
         self._source_analysis.setToolTip(self._ANALYSIS_HELP)
         self._source_backend = MetricRow("Pipe")
-        self._ignore_row = MetricRow("Ignore")
         self._baseline_row = MetricRow("Base")
         self.source.add_row(self.source_combo)
         self.source.add_row(self._mode_row)
+        self.source.add_row(self._mask_row)
         self.source.add_row(self._source_feed)
         self.source.add_row(self._source_analysis)
         self.source.add_row(self._source_backend)
-        self.source.add_row(self._ignore_row)
         self.source.add_row(self._baseline_row)
         root.addWidget(self.source)
         self._devices: list[dict] = []
         self._current_device_name = ""
-        self._current_profile = "hdmi_game"
+        self._mask_profile = "hdmi_game"
 
         self.detect = RailSection("Detect")
         self._yolo_row = MetricRow("Yolo")
@@ -359,13 +390,18 @@ class LeftRail(QWidget):
         self._incident_count = 0
 
     def _on_source_changed(self, index: int) -> None:
-        data = self.source_combo.itemData(index)
-        if not data:
+        name = self.source_combo.itemData(index)
+        if not name:
             return
-        device_name, profile = data
-        self._current_device_name = device_name
-        self._current_profile = profile
-        self.sourceSelected.emit(str(device_name), str(profile))
+        self._current_device_name = str(name)
+        self.sourceSelected.emit(str(name))
+
+    def _on_mask_changed(self, index: int) -> None:
+        profile = self.mask_combo.itemData(index)
+        if not profile:
+            return
+        self._mask_profile = str(profile)
+        self.maskSelected.emit(str(profile))
 
     def _on_mode_changed(self, index: int) -> None:
         data = self.mode_combo.itemData(index)
@@ -425,55 +461,50 @@ class LeftRail(QWidget):
         """Pinning a capture mode only means something while capturing live."""
         self.mode_combo.setEnabled(bool(enabled))
 
-    def set_devices(self, devices: list[dict], current_name: str, current_profile: str | None = None) -> None:
-        """Rebuild the selector: one entry per (device, profile) pair. The
-        capture card gets HDMI GAME and STREAM WINDOW (some people capture a
-        browser through the card); virtual cameras and webcams get all three."""
-        self._devices = [d for d in devices if str(d.get("name", ""))]
-        if current_profile:
-            self._current_profile = current_profile
+    def set_devices(self, devices: list[dict], current_name: str) -> None:
+        """Rebuild the selector: one entry per input, by its own name. Real
+        DirectShow devices first (capture cards, virtual cameras, webcams --
+        whatever Windows lists, nothing invented), then the Browser window
+        pseudo-input. What to ignore on the picture is the MASK picker, so no
+        input is ever listed more than once."""
+        real = [d for d in devices if str(d.get("name", "")) and not is_browser_window_device(d)]
+        browser = [d for d in devices if is_browser_window_device(d)]
+        self._devices = real + browser
         self._current_device_name = current_name
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
-        for device in self._devices:
-            name = str(device["name"])
-            kind = str(device.get("kind", "Input")).lower()
-            profiles = ("hdmi_game", "stream_window") if kind == "capture card" else ("hdmi_game", "stream_window", "vod_file")
-            for profile in profiles:
-                label = f"{_short_device_name(name)} · {_PROFILE_LABELS[profile]}"
-                self.source_combo.addItem(label, (name, profile))
-        if self.source_combo.count() == 0:
-            # Nothing real to offer: say why (discovery puts the reason in the
-            # label of its single empty-named entry) instead of inventing devices.
+        if not real:
+            # No device at all: say why (discovery puts the reason in the
+            # label of its single empty-named entry) as an unselectable line.
             reason = next((str(d.get("label", "")) for d in devices if not str(d.get("name", ""))), "")
             self.source_combo.addItem(reason or "No video devices found", None)
-        self._select_current()
-        self.source_combo.blockSignals(False)
-
-    def set_source_profile(self, profile: str) -> None:
-        """Reflect a profile change made elsewhere (e.g. importing a VOD)."""
-        if profile == self._current_profile:
-            return
-        self._current_profile = profile
-        self.source_combo.blockSignals(True)
+            placeholder = self.source_combo.model().item(self.source_combo.count() - 1)
+            if placeholder is not None:
+                placeholder.setEnabled(False)
+        for device in self._devices:
+            name = str(device["name"])
+            self.source_combo.addItem(_short_device_name(name), name)
         self._select_current()
         self.source_combo.blockSignals(False)
 
     def _select_current(self) -> None:
-        wanted = (self._current_device_name, self._current_profile)
         for i in range(self.source_combo.count()):
-            if self.source_combo.itemData(i) == wanted:
+            if self.source_combo.itemData(i) == self._current_device_name:
                 self.source_combo.setCurrentIndex(i)
                 return
-        # Device present but this profile isn't offered for it: fall back to
-        # the device's first entry rather than showing a wrong device. The
-        # "no devices" placeholder carries no data and is skipped.
-        for i in range(self.source_combo.count()):
-            data = self.source_combo.itemData(i)
-            if data and data[0] == self._current_device_name:
-                self.source_combo.setCurrentIndex(i)
-                self._current_profile = data[1]
-                return
+
+    def set_mask_profile(self, profile: str, *, locked: bool = False) -> None:
+        """Reflect the mask in force (set by the window: live pick, VOD import,
+        or forced STREAM for the browser input) without re-emitting."""
+        wanted = "hdmi_game" if profile == "hdmi_game" else "stream_window"
+        self._mask_profile = wanted
+        self.mask_combo.blockSignals(True)
+        for i in range(self.mask_combo.count()):
+            if self.mask_combo.itemData(i) == wanted:
+                self.mask_combo.setCurrentIndex(i)
+                break
+        self.mask_combo.blockSignals(False)
+        self.mask_combo.setEnabled(not locked)
 
     def set_recording_baseline(self, active: bool, stream_mode: str = "live") -> None:
         if stream_mode == "vod":
@@ -545,9 +576,13 @@ class LeftRail(QWidget):
         skipped = gate not in ("", "live", "ok")
         self._gate_row.set_value(gate or "live", warn=skipped)
 
-    def set_profile(self, name: str, ignore_count: int, baseline: str) -> None:
-        # The profile itself is shown by the combo; only the derived state here.
-        self._ignore_row.set_value(str(int(ignore_count)))
+    def set_profile(self, profile: str, ignore_count: int, baseline: str) -> None:
+        """Derived state: the MASK picker's tooltip carries how many regions
+        the current mask is ignoring; BASE shows the baseline recorder."""
+        if profile and profile != self._mask_profile:
+            self.set_mask_profile(profile, locked=not self.mask_combo.isEnabled())
+        count = int(ignore_count)
+        self.mask_combo.setToolTip(f"{self._MASK_HELP}\n\nIgnoring {count} region{'s' if count != 1 else ''} right now.")
         self._baseline_row.set_value(baseline or "idle", warn=(baseline == "rec"))
 
     def set_analyze_checked(self, checked: bool) -> None:
