@@ -112,7 +112,11 @@ _DISCRETE_MODE_PATTERN = re.compile(r"(?:pixel_format|vcodec)=(\S+)\s+s=(\d+)x(\
 # the development card's (AVerMedia GC573) bgr24 block only accepts 1280x720 at 50-60.0002fps,
 # not 30fps as a generic ladder might guess), so candidates are generated
 # per-resolution from the real advertised range rather than assumed values.
-_FPS_STEP_LADDER = (144.0, 120.0, 90.0, 85.0, 75.0, 60.0, 50.0, 30.0, 24.0)
+# Every common monitor refresh rate, fastest first, so a card advertising
+# 1080p at 24-240 or a 165 Hz mode gets those offered and probed rather than
+# only the span's ceiling. A rate the device does not advertise is never
+# generated, and the bandwidth ceiling below still applies to each one.
+_FPS_STEP_LADDER = (360.0, 240.0, 165.0, 144.0, 120.0, 100.0, 90.0, 85.0, 75.0, 60.0, 50.0, 30.0, 24.0)
 # Try every standard step within a resolution's supported range, not just the
 # fastest few -- the top fps values at a large resolution (144/120/90) tend
 # to be exactly the ones that overflow the capture buffer, and stopping the
@@ -193,6 +197,20 @@ def selectable_modes_from_ranges(
                 modes.append(mode)
     modes.sort(key=lambda m: (m[0] * m[1], m[2]), reverse=True)
     return modes
+
+
+def normalize_pixel_format(value: Any) -> str | None:
+    """`capture_pixel_format` setting -> DirectShow pixel format to request from
+    a capture card, or None for "auto" (leave the choice to ffmpeg/the driver,
+    the historical behaviour). A card that converts to RGB inside its own
+    driver can deliver far fewer frames in bgr24 than in its native nv12 or
+    yuyv422; tools/probe_capture_rate.py measures that per format so the
+    setting can be chosen from evidence rather than guessed."""
+    text = str(value or "").strip().lower()
+    if text in ("", "auto", "default", "none", "driver"):
+        return None
+    return text
+
 
 # Freeze detection: a stream is only "frozen" once consecutive downscaled
 # grayscale samples stay near-identical (mean absdiff below threshold) for a
@@ -777,6 +795,8 @@ class FrameSource:
         self.capture_fps = 0.0
         self._capture_kind = str(settings.get("capture_device_kind", "")).lower()
         self._capture_device_name = str(settings.get("capture_device_name", "")).strip()
+        # Pixel format to ask a capture card for (None = driver's choice).
+        self._card_pixel_format = normalize_pixel_format(settings.get("capture_pixel_format"))
         self.camera_index = int(settings.get("camera_index", 0))
         self.settings = settings.copy()
         self._follow_browser = str(settings.get("source_profile", "hdmi_game")) == "stream_window"
@@ -896,7 +916,9 @@ class FrameSource:
             ["ffmpeg", "-hide_banner", "-list_options", "true", "-f", "dshow", "-i", f"video={device_name}"],
             timeout=8.0,
         )
-        resolution_fps_ranges = self._parse_device_modes(output) if output.strip() else {}
+        resolution_fps_ranges = (
+            self._parse_device_modes(output, preferred_format=self._card_pixel_format) if output.strip() else {}
+        )
         self.advertised_modes = dict(resolution_fps_ranges)
         if not resolution_fps_ranges:
             # Could not enumerate modes: try the requested one directly.
@@ -905,10 +927,13 @@ class FrameSource:
             ladder = self._build_calibration_ladder(width, height, float(fallback_fps), resolution_fps_ranges)
         return self._calibrate_capture_mode(device_name, ladder)
 
-    def _parse_device_modes(self, output: str) -> dict[tuple[int, int], tuple[float, float]]:
+    def _parse_device_modes(
+        self, output: str, preferred_format: str | None = None
+    ) -> dict[tuple[int, int], tuple[float, float]]:
         """Parse every `pixel_format=... min/max s=...` and `s=... fps=...`
-        line into {(width, height): (min_fps, max_fps)}, scoped to the bgr24
-        block specifically (that's the pixel format we always request) since
+        line into {(width, height): (min_fps, max_fps)}, scoped to the block
+        of the pixel format we request (bgr24 unless capture_pixel_format
+        says otherwise) since
         a device can advertise a narrower fps ceiling for bgr24 than for its
         other formats at the same resolution. A device can also report
         several lines for the *same* (format, resolution) pair -- e.g. a
@@ -944,8 +969,9 @@ class FrameSource:
                 mode_fps = float(discrete_match.group(4))
                 merge(fmt, (mode_w, mode_h), mode_fps, mode_fps)
 
-        if "bgr24" in by_format:
-            return by_format["bgr24"]
+        for fmt in (preferred_format, "bgr24"):
+            if fmt and fmt in by_format:
+                return by_format[fmt]
         if by_format:
             # No explicit bgr24 block advertised -- fall back to whichever
             # pixel format block the device did report so calibration still
@@ -1101,7 +1127,9 @@ class FrameSource:
         """Returns (passed, frames_seen, capture). The capture is only
         returned (still streaming) when the candidate passed."""
         try:
-            probe = FFmpegRawVideoCapture(device_name, width, height, int(round(fps)))
+            probe = FFmpegRawVideoCapture(
+                device_name, width, height, int(round(fps)), pixel_format=self._card_pixel_format
+            )
         except Exception:
             return False, 0, None
 
@@ -1141,7 +1169,8 @@ class FrameSource:
             fps * _CALIBRATION_MIN_FPS_RATIO, _CALIBRATION_MIN_ABSOLUTE_FPS
         )
         print(
-            f"[CAPTURE] [CALIBRATE] {width}x{height}@{fps:.0f}: {achieved_fps:.1f} fps"
+            f"[CAPTURE] [CALIBRATE] {width}x{height}@{fps:.0f}"
+            f"{' ' + self._card_pixel_format if self._card_pixel_format else ''}: {achieved_fps:.1f} fps"
             f"{' OVERFLOW' if overflowed else ''}{' BUSY' if busy else ''} -> {'ok' if passed else 'reject'}"
         )
         if passed:

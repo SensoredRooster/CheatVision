@@ -73,5 +73,86 @@ class DeviceDiscoveryTests(unittest.TestCase):
         self.assertIn("ffmpeg", str(devices[0]["label"]))
 
 
+# Trimmed from `ffmpeg -list_options true -f dshow -i "video=AVerMedia HD Capture GC573 1"`
+# on the development machine (FFmpeg 9.0): 1440p is advertised to 144 in every
+# pixel format, 1080p to 240, 4K to 60. bgr24 is enumerated last; the P010
+# block appears as an "unknown compression type" and must be ignored.
+_GC573_LIST_OPTIONS = """
+[dshow @ 0] DirectShow video device options (from video devices)
+[dshow @ 0]  Pin "Capture" (alternative pin name "0")
+[dshow @ 0]   pixel_format=yuyv422  min s=1920x1080 fps=24 max s=1920x1080 fps=240.004
+[dshow @ 0]   pixel_format=yuyv422  min s=2560x1440 fps=59.9402 max s=2560x1440 fps=144.001
+[dshow @ 0]   pixel_format=yuyv422  min s=3840x2160 fps=24 max s=3840x2160 fps=60.0002
+[dshow @ 0]   pixel_format=nv12  min s=1920x1080 fps=24 max s=1920x1080 fps=240.004
+[dshow @ 0]   pixel_format=nv12  min s=2560x1440 fps=59.9402 max s=2560x1440 fps=144.001
+[dshow @ 0]   pixel_format=nv12  min s=3840x2160 fps=24 max s=3840x2160 fps=60.0002
+[dshow @ 0]   unknown compression type 0x30313050  min s=2560x1440 fps=59.9402 max s=2560x1440 fps=144.001
+[dshow @ 0]   pixel_format=bgr24  min s=1920x1080 fps=24 max s=1920x1080 fps=240.004
+[dshow @ 0]   pixel_format=bgr24  min s=2560x1440 fps=59.9402 max s=2560x1440 fps=120
+[dshow @ 0]   pixel_format=bgr24  min s=2560x1440 fps=144.001 max s=2560x1440 fps=144.001
+[dshow @ 0]   pixel_format=bgr24  min s=3840x2160 fps=24 max s=3840x2160 fps=60.0002
+[dshow @ 0]   pixel_format=bgr24  min s=1280x720 fps=50 max s=1280x720 fps=60.0002
+"""
+
+
+class HighRefreshLadderTests(unittest.TestCase):
+    def test_common_high_refresh_steps_are_offered_when_advertised(self) -> None:
+        modes = selectable_modes_from_ranges({(1920, 1080): (24.0, 240.004)})
+        for fps in (240, 165, 144, 120, 100, 60):
+            self.assertIn((1920, 1080, fps), modes, fps)
+        self.assertEqual(modes[0], (1920, 1080, 240))
+
+    def test_360_is_offered_only_where_advertised_and_affordable(self) -> None:
+        # 1280x720 x 3 bytes x 360 = 1.0 GB/s: under the raw-pipe ceiling.
+        self.assertIn((1280, 720, 360), selectable_modes_from_ranges({(1280, 720): (24.0, 360.0)}))
+        # 1920x1080 x 3 x 360 = 2.24 GB/s: over it, so not offered for a capture card...
+        self.assertNotIn((1920, 1080, 360), selectable_modes_from_ranges({(1920, 1080): (24.0, 360.0)}))
+        # ...while a virtual camera (fixed software rate) skips that filter.
+        self.assertIn(
+            (1920, 1080, 360),
+            selectable_modes_from_ranges({(1920, 1080): (24.0, 360.0)}, apply_bandwidth_ceiling=False),
+        )
+        # Never invented: a 240 ceiling does not grow a 360 entry.
+        self.assertNotIn((1920, 1080, 360), selectable_modes_from_ranges({(1920, 1080): (24.0, 240.0)}))
+
+
+class DeviceModeParsingTests(unittest.TestCase):
+    def _source(self, **extra) -> frame_source.FrameSource:
+        return frame_source.FrameSource(
+            {
+                "capture_mode": "camera",
+                "capture_device_name": "AVerMedia HD Capture GC573 1",
+                "capture_device_kind": "Capture Card",
+                **extra,
+            }
+        )
+
+    def test_gc573_output_parses_to_its_real_ceilings(self) -> None:
+        ranges = self._source()._parse_device_modes(_GC573_LIST_OPTIONS)
+        self.assertEqual(ranges[(2560, 1440)], (59.9402, 144.001))
+        self.assertEqual(ranges[(1920, 1080)], (24.0, 240.004))
+        self.assertEqual(ranges[(3840, 2160)], (24.0, 60.0002))
+        modes = selectable_modes_from_ranges(ranges)
+        self.assertIn((2560, 1440, 144), modes)
+        self.assertIn((1920, 1080, 240), modes)
+        self.assertNotIn((3840, 2160, 120), modes)  # never advertised
+
+    def test_requested_pixel_format_scopes_the_parse(self) -> None:
+        source = self._source(capture_pixel_format="nv12")
+        self.assertEqual(source._card_pixel_format, "nv12")
+        ranges = source._parse_device_modes(_GC573_LIST_OPTIONS, preferred_format=source._card_pixel_format)
+        self.assertEqual(ranges[(2560, 1440)], (59.9402, 144.001))
+        self.assertNotIn((1280, 720), ranges)  # only the bgr24 block lists it here
+        # A format the device does not list falls back to bgr24, not to nothing.
+        fallback = source._parse_device_modes(_GC573_LIST_OPTIONS, preferred_format="p010")
+        self.assertIn((1280, 720), fallback)
+
+    def test_pixel_format_setting_normalisation(self) -> None:
+        for raw in (None, "", "auto", "AUTO", "default", "driver"):
+            self.assertIsNone(frame_source.normalize_pixel_format(raw), raw)
+        self.assertEqual(frame_source.normalize_pixel_format(" NV12 "), "nv12")
+        self.assertIsNone(self._source()._card_pixel_format)
+
+
 if __name__ == "__main__":
     unittest.main()
