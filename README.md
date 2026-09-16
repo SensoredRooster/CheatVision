@@ -23,6 +23,11 @@ Repo: https://github.com/SensoredRooster/CheatVision
 
 ## Quick start (three steps, no experience needed)
 
+> **One working folder.** Clone or unzip once, run from that folder, and push from it.
+> A second checkout of the same GitHub repo will not see your `data/incidents`,
+> `data/telemetry`, `data/recordings`, or `logs/`, and editing both will fork the project.
+
+
 1. Install **Python 3.11 or newer** from https://www.python.org/downloads/ and tick **"Add python.exe to PATH"** in the installer.
 2. Download this repo (green **Code** button → **Download ZIP**, unzip it; or `git clone`). Open the folder and double-click **`setup.bat`**. It builds the app's private Python environment, installs its packages, installs ffmpeg if it is missing, asks whether to fetch the player detector (say Y), and finishes with a checklist that says exactly what is still missing, if anything.
 3. Double-click **`run.bat`**. The app opens on the CheatVision mark and connects to your capture card.
@@ -56,7 +61,7 @@ A clone or ZIP is **source code only**. These are deliberately not in git, and
 | ffmpeg | a separate program, not a Python package | `setup.bat`, or winget / gyan.dev |
 | your capture card's driver | vendor software | the vendor's site. The card must show up in the Windows **Camera** app before CheatVision can see it |
 | `config/settings.local.json` | your own device / MODE / MASK picks | the app writes it the first time you pick something |
-| `data/incidents`, `data/recordings`, `data/clean`, `logs/` | your own output | created on first run |
+| `data/incidents`, `data/recordings`, `data/clean`, `data/telemetry`, `logs/` | your own output | created on first run |
 
 ---
 
@@ -179,6 +184,11 @@ status text at the top.)
 | **TREMOR** | hand jitter. Humans while moving fast: never below ~0.5 in testing. Turns red ≤ 0.05 with STR ≥ 0.90 — that is the mechanical signature |
 | graph | STR (line) and TREMOR (fill) over the last ~12 s |
 
+While the app is open, the same numbers (plus gate, track count, detector state)
+are also written ~20 times a second to a rolling file under `data/telemetry/`
+— useful when INCIDENTS stays empty but you still want to sift the session later.
+See §10.
+
 ### INCIDENTS card
 
 Every flag lands here: time, class, confidence, track id. The count is in the
@@ -203,7 +213,7 @@ double-click also jumps the video to that frame.
 ## 4. Review a saved video (the easiest way to start)
 
 1. Click **IMPORT**, pick an `.mp4`.
-2. MASK switches to `STREAM` (a recording has its overlays baked in; flip it to `GAME` for raw gameplay) and YOLO turns on.
+2. MASK defaults to `GAME` so raw gameplay stays unmasked while the product is early (flip it to `STREAM` if the file has stream chrome / chat / facecam). YOLO turns on.
 3. Playback controls appear under the video: ⏸/▶ and a scrub bar.
 4. Watch INCIDENTS fill in. Double-click any row to jump there.
 5. Judge each flag yourself — CheatVision *points at* suspicious motion; it does
@@ -251,8 +261,7 @@ not gameplay*. They are separate pickers, so every input is listed once.
 | `STREAM` | the feed is a stream page: Browser window, a recorded stream, or a card/virtual camera carrying a browser | top and bottom stream chrome, chat column on the right, facecam |
 
 MASK applies immediately with no capture restart. **Browser window** forces
-`STREAM`. Importing a VOD switches MASK to `STREAM`; flip it to `GAME` for a
-raw gameplay recording. The live choice is remembered; the VOD choice lasts the
+`STREAM`. Importing a VOD keeps MASK on `GAME` by default (early-dev preference so you see the real picture); flip it to `STREAM` when the file has stream chrome / chat / facecam. The live choice is remembered; the VOD choice lasts the
 session. (The status text shows the mask in force as `HDMI GAME`, `STREAM
 WINDOW` or `VOD FILE`; the last two are the same mask.)
 
@@ -429,14 +438,15 @@ CLEAN**. Zero dropped frames at 1440p in testing; ~90 MB of memory.
 |---|---|
 | **proof for each flag** (snapshot.png, clip.mp4, event.json) | `data/incidents/<date-time>_<class>_fr<frame>/` |
 | flag events (one JSON line each, all sessions) | `logs/session_<time>.jsonl` |
+| **rolling telemetry** (STR / tremor / gate / tracks ~20 Hz, even with zero incidents) | `data/telemetry/roll_<date-time>.partial.jsonl` while running; renamed to `roll_<date-time>.jsonl` when you quit |
 | plain-text app log | `logs/events.log` |
 | session recordings (RECORD SESSION) | `data/recordings/` |
 | baseline recordings | `data/clean/` |
 | your device / MODE / profile choices | `config/settings.local.json` (written by the app; git-ignored, so your picks never ship with the repo) |
 | YOLO weights | `data/models/yolov8n.onnx` |
 
-`data/recordings`, `data/clean`, `data/suspicious`, `data/incidents`, `logs` and the weights are
-**not** committed to git.
+`data/recordings`, `data/clean`, `data/suspicious`, `data/incidents`, `data/telemetry` rolls, `logs` and the weights are
+**not** committed to git. Keep **one** working tree on disk (the folder you actually run). A second clone of the same GitHub repo will not share these folders and is easy to edit by mistake.
 
 ---
 
@@ -704,6 +714,7 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | `src/core/object_detector.py` | YOLO (ONNX Runtime) + IOU tracker |
 | `src/core/dataset_exporter.py` | baseline recorder |
 | `src/core/evidence.py` | per-incident proof: annotated snapshot, pre/post clip, event.json (`data/incidents/`) |
+| `src/core/telemetry_log.py` | rolling live telemetry JSONL under `data/telemetry/` (`.partial.jsonl` → finished `.jsonl` on quit) |
 | `src/core/train_workflow.py` | optional classifier (needs torch) |
 | `src/ui/main_window.py` | composition root, worker wiring, settings persistence |
 | `src/ui/workers.py` | capture / playback / analysis / detection / render threads |
