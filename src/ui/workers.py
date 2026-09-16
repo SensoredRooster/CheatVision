@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from src.core.anti_cheat_pipeline import AntiCheatPipeline, CheatEvent, FrameContext
 from src.core.dataset_exporter import PixelVisionDatasetExporter
 from src.core.evidence import EvidenceRecorder
+from src.core.telemetry_log import RollingTelemetryLog
 from src.core.frame_source import FFmpegRawVideoCapture, FrameSource
 
 _GATE_CHIP_FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -552,11 +553,13 @@ class AnalysisWorker(QObject):
         dataset_exporter: PixelVisionDatasetExporter,
         capture_worker: CaptureWorker,
         evidence: EvidenceRecorder | None = None,
+        telemetry_log: RollingTelemetryLog | None = None,
     ):
         super().__init__()
         self._pipeline = pipeline
         self._dataset_exporter = dataset_exporter
         self._evidence = evidence
+        self._telemetry_log = telemetry_log
         self._source_lock = threading.Lock()
         self._capture_worker = capture_worker
         self._source: CaptureWorker | PlaybackWorker = capture_worker
@@ -605,6 +608,15 @@ class AnalysisWorker(QObject):
             if flagged != last_flagged or now - last_telemetry_emit >= _TELEMETRY_EMIT_INTERVAL_SEC:
                 telemetry = dict(self._pipeline.last_telemetry_snapshot or {})
                 telemetry["flagged"] = flagged
+                telemetry["frame_id"] = int(ctx.frame_id)
+                telemetry["gate"] = self._pipeline.gate_reason()
+                with self._pipeline._entities_lock:
+                    tracks = list(self._pipeline.last_tracked_entities)
+                telemetry["tracks"] = len(tracks)
+                telemetry["detector_ready"] = bool(self._pipeline.detector_ready)
+                telemetry["detector_has_result"] = bool(self._pipeline.detector_has_result)
+                if self._telemetry_log is not None:
+                    self._telemetry_log.write(telemetry, force=flagged)
                 self.telemetryUpdated.emit(telemetry)
                 last_telemetry_emit = now
                 last_flagged = flagged
@@ -621,6 +633,11 @@ class AnalysisWorker(QObject):
 
     def stop(self) -> None:
         self._stop_event.set()
+        if self._telemetry_log is not None:
+            finished = self._telemetry_log.close()
+            if finished is not None:
+                print(f"[TELEMETRY] finished {finished.name}")
+            self._telemetry_log = None
 
 
 class RenderWorker(QObject):

@@ -21,6 +21,7 @@ from src.core.anti_cheat_pipeline import SOURCE_PROFILE_LABELS, AntiCheatPipelin
 from src.core.dataset_exporter import PixelVisionDatasetExporter
 from src.core.event_logger import EventLogger
 from src.core.evidence import EvidenceRecorder
+from src.core.telemetry_log import RollingTelemetryLog
 from src.core.frame_source import (
     BROWSER_WINDOW_DEVICE,
     discover_directshow_devices,
@@ -64,6 +65,7 @@ class MainWindow(QMainWindow):
         self.event_logger = EventLogger(log_dir)
         self.dataset_exporter = PixelVisionDatasetExporter(target_resolution=target_resolution, project_root=project_root)
         self.evidence = EvidenceRecorder(project_root)
+        self.telemetry_log = RollingTelemetryLog(project_root)
         facecam_roi = settings.get("facecam_roi") or None
 
         self.pipeline = AntiCheatPipeline(
@@ -191,7 +193,7 @@ class MainWindow(QMainWindow):
 
         self._capture_worker, self._capture_thread = self._make_capture_worker(preferred)
 
-        self._analysis_worker = AnalysisWorker(self.pipeline, self.dataset_exporter, self._capture_worker, evidence=self.evidence)
+        self._analysis_worker = AnalysisWorker(self.pipeline, self.dataset_exporter, self._capture_worker, evidence=self.evidence, telemetry_log=self.telemetry_log)
         self._analysis_thread = QThread(self)
         self._analysis_worker.moveToThread(self._analysis_thread)
         self._analysis_worker.cheatEventDetected.connect(self._on_cheat_event_detected)
@@ -872,6 +874,10 @@ class MainWindow(QMainWindow):
                 self._analysis_worker.stop()
             self._analysis_thread.quit()
             self._analysis_thread.wait(2000)
+        if getattr(self, "telemetry_log", None) is not None:
+            finished = self.telemetry_log.close()
+            if finished is not None:
+                print(f"[TELEMETRY] staged {finished}")
         self.event_logger.log("Application closed")
         try:
             self.evidence.close()

@@ -33,3 +33,6 @@ data/training.csv
 # Generated evaluation output
 data/**/eval_report.json
 data/incidents/
+data/telemetry/*
+!data/telemetry/README.md
+!data/telemetry/.gitkeep
