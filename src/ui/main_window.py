@@ -93,7 +93,9 @@ class MainWindow(QMainWindow):
         # Mask used while a VOD is mounted. Kept apart from the saved live mask
         # (settings["source_profile"]) so importing a stream recording never
         # leaks STREAM masks back onto the capture card afterwards.
-        self._vod_mask_profile = "vod_file"
+        # Early builds default to GAME so raw capture / VODs show the real
+        # picture; flip MASK to STREAM only when the file has stream chrome.
+        self._vod_mask_profile = "hdmi_game"
         self._last_signal_paint_time = 0.0
         self._last_slider_paint_time = 0.0
         self._latest_telemetry: dict = {}
@@ -330,8 +332,8 @@ class MainWindow(QMainWindow):
         self.pipeline.set_stream_frozen(False)
         self.control_bar.set_stream_mode(self._stream_mode)
         self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
-        # A recorded stream has its chrome baked in: STREAM masks by default,
-        # switchable in the MASK picker if the file is raw gameplay.
+        # Prefer GAME while the product is early so VODs show the real picture.
+        # Flip MASK to STREAM when the file has stream chrome / chat / facecam.
         self._apply_mask(self._vod_mask_profile)
 
         self._mounted_vod_name = Path(path).name
