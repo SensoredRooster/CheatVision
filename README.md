@@ -468,7 +468,7 @@ CLEAN**. Zero dropped frames at 1440p in testing; ~90 MB of memory.
 | `detection_fps` | how often YOLO runs (default 30) |
 | `analysis_rate_hz` | analysed aim samples a second to aim for (default 20, the cadence the rules were tuned at); the stride follows the feed's real rate (§7) |
 | `analysis_stride` | starting stride (default 3); adapts automatically once the feed rate is known |
-| `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds (default 0.35 / 0.45; see §7 "Making the player detector stronger") |
+| `detection_confidence_threshold` / `detection_nms_threshold` | YOLO thresholds (default 0.25 / 0.45; see §7 "Making the player detector stronger") |
 | `detection_provider` | `auto` (GPU via DirectML when `onnxruntime-directml` is installed, else CPU), `cpu`, or `directml` |
 | `detection_threads` | CPU threads for the detector; `0` = half the machine, between 2 and 8 |
 | `detection_input_size` | only for a dynamic-shape model export; a fixed export dictates its own size (default export is 960) |
@@ -647,8 +647,8 @@ flags. The bar is a stack of hard gates. Roughly:
    scoring below).
 
 The only "confidence" number that looks like a percentage in the pipeline is
-mostly for **YOLO player boxes** (default detect confidence ~0.35). That answers
-"is this a player?", **not** "how cheaty is this aim."
+mostly for **YOLO player boxes** (default detect confidence ~0.25). That answers
+"is this a player?", **not** "how cheaty is this aim." Frames are converted BGR	o RGB before YOLO (the ONNX export expects RGB).
 
 ### Tradeoff if you loosen the bar
 

@@ -132,7 +132,7 @@ class AntiCheatPipeline:
         dataset_exporter: PixelVisionDatasetExporter | None = None,
         target_resolution: tuple[int, int] = (2560, 1440),
         player_detector_model_path: str = "data/models/yolov8n.onnx",
-        detection_confidence_threshold: float = 0.35,
+        detection_confidence_threshold: float = 0.25,
         detection_nms_threshold: float = 0.45,
         detection_player_class_ids: list[int] | None = None,
         detection_input_size: int | None = None,

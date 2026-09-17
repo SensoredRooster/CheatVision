@@ -33,3 +33,10 @@ a slow CPU with no usable GPU.
 COCO class `0` (`person`) is the default in `config/settings.json`. A
 game-tuned model will beat COCO person boxes for Warzone silhouettes; drop it
 here and point `player_detector_model_path` at it.
+
+## Colour space
+
+CheatVision capture frames are OpenCV **BGR**. The ONNX export expects **RGB**;
+`PixelVisionObjectDetector` converts before inference. Feeding BGR without that
+conversion tanks person confidence on Warzone-like footage.
+

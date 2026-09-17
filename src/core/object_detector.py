@@ -31,7 +31,7 @@ class PixelVisionObjectDetector:
     def __init__(
         self,
         model_path: str = "data/models/yolov8n.onnx",
-        conf_threshold: float = 0.35,
+        conf_threshold: float = 0.25,
         nms_threshold: float = 0.45,
         player_class_ids: list[int] | None = None,
         input_size: int | None = None,
@@ -268,7 +268,14 @@ class PixelVisionObjectDetector:
 
         orig_height, orig_width = frame.shape[:2]
         try:
-            padded_frame, scale, pad_x, pad_y = self._apply_letterbox(frame)
+            # Ultralytics YOLO ONNX exports expect RGB. Capture / OpenCV frames
+            # are BGR; feeding BGR silently tanks person confidence (measured:
+            # Warzone mid-clip BGR@0.35 -> 0 boxes, RGB@0.35 -> 5 boxes).
+            if frame.ndim == 3 and frame.shape[2] == 3:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                frame_rgb = frame
+            padded_frame, scale, pad_x, pad_y = self._apply_letterbox(frame_rgb)
             blob = padded_frame.transpose((2, 0, 1))
             blob = np.expand_dims(blob, axis=0).astype(np.float32) / 255.0
 

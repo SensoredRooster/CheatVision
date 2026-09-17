@@ -9,6 +9,31 @@ from typing import Any
 
 
 class RollingTelemetryLog:
+    @staticmethod
+    def _finalize_orphan_partials(root: Path) -> None:
+        """Rename leftover ``.partial.jsonl`` rolls from a prior crash/stop.
+
+        A clean ``close()`` already renames the active file; anything still
+        named ``.partial`` here was abandoned (force-quit, kill, or a stop
+        path that never reached close). Promoting them keeps the folder
+        sift-able without deleting evidence.
+        """
+        for partial in sorted(root.glob("roll_*.partial.jsonl")):
+            if partial.stat().st_size <= 0:
+                try:
+                    partial.unlink()
+                except OSError:
+                    pass
+                continue
+            finished = partial.with_name(partial.name.replace(".partial.jsonl", ".jsonl"))
+            if finished.exists():
+                finished = partial.with_name(partial.name.replace(".partial.jsonl", ".recovered.jsonl"))
+            try:
+                partial.replace(finished)
+                print(f"[TELEMETRY] recovered orphan {finished.name}")
+            except OSError as exc:
+                print(f"[TELEMETRY] [WARN] could not recover {partial.name}: {exc}")
+
     """Append-only JSONL of live telemetry under ``data/telemetry/``.
 
     Runs in the analysis worker thread: each ``write`` is a short lock + append.
@@ -19,6 +44,7 @@ class RollingTelemetryLog:
     def __init__(self, project_root: str | Path, *, sample_hz: float = 20.0):
         self.root = Path(project_root) / "data" / "telemetry"
         self.root.mkdir(parents=True, exist_ok=True)
+        self._finalize_orphan_partials(self.root)
         self._min_interval = 1.0 / max(1.0, float(sample_hz))
         self._lock = threading.Lock()
         self._last_write = 0.0

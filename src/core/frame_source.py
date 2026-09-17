@@ -236,7 +236,7 @@ _FREEZE_ABSDIFF_THRESHOLD = 1.5
 _FREEZE_HOLD_FRAMES = 90
 # Frame-based hold alone shrinks to ~0.6s at 144fps, which trips on ordinary
 # menus/loading screens; hold for at least this long regardless of rate.
-_FREEZE_HOLD_SECONDS = 1.5
+_FREEZE_HOLD_SECONDS = 3.0
 _FREEZE_SAMPLE_SIZE = (320, 180)
 _PREVIEW_MAX_WIDTH = 2560
 _MIN_AUTO_HEIGHT = 720
@@ -693,6 +693,13 @@ class FFmpegRawVideoCapture:
                 filled += count
 
             if filled != self._frame_size:
+                # HDMI unplug / device stall: stop treating the last good
+                # picture as live. Next open() builds a fresh capture.
+                with self._frame_condition:
+                    self._stream_frozen = True
+                    self._freeze_sample = None
+                    self._freeze_hold_count = 0
+                    self._frame_condition.notify_all()
                 break
 
             sample = _freeze_sample(frame)
