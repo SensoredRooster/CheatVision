@@ -72,8 +72,8 @@ _MAX_BOX_AREA_RATIO = 0.6
 # false positives: 0.6 -> 14 -> 37 px and 5 -> 41 -> 46 px -- so the previous
 # step may be at most this fraction of the snap step. After landing, the aim
 # must stay on the head this long before the verdict is reported.
-_SNAP_RAMP_RATIO = 0.15
-_SNAP_HOLD_SECONDS = 0.20
+_SNAP_RAMP_RATIO = 0.1575
+_SNAP_HOLD_SECONDS = 0.19
 # The aim rules are tuned for ~20 analysed samples a second (60 new pictures
 # analysed every third frame). set_feed_rate() keeps the analysis cadence in
 # this band around analysis_rate_hz by choosing the stride, and hands the exact
@@ -84,7 +84,7 @@ _MAX_ANALYSIS_STRIDE = 60
 _GATE_HYSTERESIS_SECONDS = 20.0 / 60.0
 _GATE_HYSTERESIS_FRAMES = (10, 120)
 # Sticky-aim hits are counted in analysed steps: this many at the reference cadence.
-_STICKY_NEED_REFERENCE = 6
+_STICKY_NEED_REFERENCE = 5
 
 
 def _clamp_frac(rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -691,13 +691,13 @@ class AntiCheatPipeline:
         # follows the analysis cadence (see set_feed_rate): at 20 samples/s
         # rate == 1.0 and these are the tuned numbers.
         rate = float(getattr(self.crosshair_analyzer, "rate_scale", 1.0) or 1.0)
-        snap_min = 12.0 * scale
+        snap_min = 11.4 * scale
         snap_step = snap_min * rate
-        land_px = 34.0 * scale
-        sticky_err = 22.0 * scale
-        sticky_cam_move = 4.0 * scale * rate
+        land_px = 35.7 * scale
+        sticky_err = 23.1 * scale
+        sticky_cam_move = 3.8 * scale * rate
         sticky_need = max(3, int(round(_STICKY_NEED_REFERENCE / rate)))
-        flick_px = 26.0 * scale * rate
+        flick_px = 24.7 * scale * rate
         rx, ry = float(reticle[0]), float(reticle[1])
         dx = float(metrics.get("last_dx") or 0.0)
         dy = float(metrics.get("last_dy") or 0.0)
