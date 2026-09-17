@@ -638,10 +638,10 @@ You do **not** need a score like "must be above 80% cheat" before something
 flags. The bar is a stack of hard gates. Roughly:
 
 1. **Aim metrics vs fixed thresholds** — examples on the current tuned path:
-   mean velocity around **14.5 px/step**, path straightness around **0.978**,
-   plus hold times (geometric line ~**0.20 s**, mechanical lock ~**0.10 s**).
+   mean velocity around **13.8 px/step**, path straightness around **0.9769**,
+   plus hold times (geometric line ~**0.19 s**, mechanical lock ~**0.095 s**).
 2. **Persistence** — the same flag type must keep firing for a short time
-   (~**0.04 s** if a tracked player is under the aim, ~**0.16 s** in free
+   (~**0.038 s** if a tracked player is under the aim, ~**0.152 s** in free
    space) before a CheatEvent is committed.
 3. **Extra snap / sticky rules** — ramp ratio, hold on head, etc. (see Aim
    scoring below).
@@ -680,15 +680,15 @@ FPS reticles sit at screen centre; cheats move the **camera**.
    max(residual variance off a line, step variance); **jerk** = variance of the
    second difference (a bot tracking a *curving* target reads as tremor 10–16 on
    a line fit while the hand does nothing).
-5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 14.5 px, straightness ≥ 0.978 **and
-   jerk ≤ 4**, held **≥ 0.20 s**. The jerk condition came from two live false
+5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 13.8 px, straightness ≥ 0.9769 **and
+   jerk ≤ 4**, held **≥ 0.19 s**. The jerk condition came from two live false
    positives: fast whips with straightness 0.99 but jerk 134 and 568 — a hand
    shaking hard along a straight-ish path is not a scripted line (which
    measures < 1). `MECHANICAL_LOCK_NO_TREMOR`: fast with tremor *or* jerk
-   ≤ 0.45 held ≥ 0.10 s. Hold clocks survive brief measurement dropouts.
+   ≤ 0.45 held ≥ 0.095 s. Hold clocks survive brief measurement dropouts.
 
 **Why time-based:** on ~5,600 analysed frames of legit 1440p144 Warzone,
-straightness ≥ 0.978 occurs 7–48× per clip (every flick is briefly straight),
+straightness ≥ 0.9769 occurs 7–48× per clip (every flick is briefly straight),
 single steps reach 47 px, but fast + tremor ≤ 0.45 occurred **zero** times.
 Frame-count persistence also behaved differently at 60 vs 144 Hz.
 
@@ -697,7 +697,7 @@ Frame-count persistence also behaved differently at 60 vs 144 Hz.
 or a VOD's fps) picks the stride that lands nearest `analysis_rate_hz` and only
 changes it when the cadence leaves a 0.7–1.4× band, then calls
 `CrosshairKinematicsAnalyzer.set_sample_rate()`: velocity-like thresholds
-(14.5 px/step, snap 12, flick 26, sticky camera move 4) scale with the step time,
+(13.8 px/step, snap 12, flick 26, sticky camera move 4) scale with the step time,
 variance-like ones (tremor 0.45, jerk 4) with its square, step counts (lock
 streak 3, sticky hits 6) inversely, the window covers 0.9 s and the scene-gate
 hysteresis a third of a second. At the reference cadence every number is
@@ -708,13 +708,13 @@ Replica-aim with YOLO boxes (detections inside the profile's
 
 | event | idea |
 |---|---|
-| `SNAP_TO_TARGET` | an **instant** step ≥ 12 px (the frame before it ≤ 15 % of the step — humans ramp up, measured 0.6→14→37 px on a live false positive) landing ≤ 34 px from a head, moving toward where the head was, and then **held on that head ≥ 0.20 s** before it is reported (an assist lands and stays; a whipped hand overshoots or drifts) |
+| `SNAP_TO_TARGET` | an **instant** step ≥ 12 px (the frame before it ≤ 15 % of the step — humans ramp up, measured 0.6→14→37 px on a live false positive) landing ≤ 34 px from a head, moving toward where the head was, and then **held on that head ≥ 0.19 s** before it is reported (an assist lands and stays; a whipped hand overshoots or drifts) |
 | `STICKY_AIM` | reticle ≤ 22 px from a head while the *camera* moves, ≥ 6 hits (a perfect lock keeps the head still on screen) |
 | `FLICK_SNAP` | one instant step ≥ 26 px and ≫ mean velocity landing near the nearest head; same ramp test and hold requirement as a snap |
 
 Kinematic flags without a replica event still need a YOLO box under the reticle
-when the detector is ready. A verdict must persist 0.04 s (target-corroborated)
-or 0.16 s (free-space) and is reported once per streak. Events are JSONL lines
+when the detector is ready. A verdict must persist 0.038 s (target-corroborated)
+or 0.152 s (free-space) and is reported once per streak. Events are JSONL lines
 in `logs/`.
 
 ## Profiles
