@@ -497,7 +497,7 @@ class AntiCheatPipeline:
         display_point = scale_point((px, py), (analysis_w, analysis_h), (display_w, display_h))
 
         metrics["_timestamp"] = float(frame_context.timestamp)
-        replica = self._score_replica_aim(metrics, tracked_entities_snapshot, (px, py), analysis_w)
+        replica = self._score_replica_aim(metrics, tracked_entities_snapshot, (px, py), analysis_w, source_frame)
         kinematic_flagged = bool(metrics.get("flagged"))
         if replica is not None:
             metrics["flagged"] = True
@@ -623,12 +623,67 @@ class AntiCheatPipeline:
         # Head sits ~20% down from the top of a standing person box.
         return ((x1 + x2) * 0.5, y1 + 0.20 * h)
 
+
+    def _nameplate_roi(self, bbox: tuple[int, int, int, int], frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
+        """Screen band where Warzone draws the floating name / squad icon."""
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        # Stay *above* the box top: sunlit ground behind a teammate is often
+        # orange and will drown a blue plate if the ROI dips into the torso.
+        nx1 = max(0, x1 - int(0.25 * bw))
+        nx2 = min(frame_w, x2 + int(0.25 * bw))
+        ny2 = max(0, y1 - 2)
+        ny1 = max(0, y1 - max(28, int(0.70 * bh)))
+        if ny2 <= ny1:
+            ny1 = max(0, y1 - 32)
+            ny2 = max(ny1 + 8, y1 - 2)
+        return nx1, ny1, nx2, ny2
+
+    def _looks_like_ally(self, frame: np.ndarray | None, bbox: tuple[int, int, int, int]) -> bool:
+        """True when the floating nameplate above a track reads squad-blue.
+
+        Warzone paints friendlies (and PROTECT contracts) in saturated blue /
+        cyan over the head. Enemies read orange/yellow. Sticky / snap / flick
+        must not latch those ally boxes — track #2046 on JaCrispy was a clean
+        false sticky from friend-as-target geometry.
+        """
+        if frame is None or frame.ndim != 3 or frame.shape[2] < 3:
+            return False
+        fh, fw = frame.shape[:2]
+        nx1, ny1, nx2, ny2 = self._nameplate_roi(bbox, fw, fh)
+        if nx2 - nx1 < 8 or ny2 - ny1 < 6:
+            return False
+        roi = frame[ny1:ny2, nx1:nx2]
+        if roi.size == 0:
+            return False
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        # Squad / friendly nameplate blue + cyan. Tuned against the
+        # 20260917-002814 sticky FP (JaCrispy blue plate over the reticle).
+        ally = cv2.inRange(hsv, np.array([85, 60, 70], dtype=np.uint8), np.array([135, 255, 255], dtype=np.uint8))
+        enemy = cv2.inRange(hsv, np.array([5, 90, 90], dtype=np.uint8), np.array([30, 255, 255], dtype=np.uint8))
+        ally_px = int(cv2.countNonZero(ally))
+        enemy_px = int(cv2.countNonZero(enemy))
+        area = float(roi.shape[0] * roi.shape[1])
+        if area <= 0:
+            return False
+        # A clear blue plate wins even if sunlit orange dirt shares the band.
+        if ally_px >= 55:
+            return True
+        if ally_px < max(24, int(0.015 * area)):
+            return False
+        # Weak blue: only accept when it is not crushed by enemy-orange.
+        if enemy_px > ally_px * 3.0 and enemy_px > 120:
+            return False
+        return True
+
     def _score_replica_aim(
         self,
         metrics: dict[str, Any],
         entities: list[dict[str, Any]],
         reticle: tuple[Any, Any],
         analysis_w: int,
+        analysis_frame: np.ndarray | None = None,
     ) -> dict[str, Any] | None:
         scale = max(float(analysis_w), 1.0) / 960.0
         # Distances on screen scale with the analysis size only; anything
@@ -671,6 +726,13 @@ class AntiCheatPipeline:
             if head is None:
                 continue
             track_id = entity.get("track_id")
+            # Friendly nameplate / PROTECT blue: do not let sticky or snap
+            # latch a teammate look (regression: JaCrispy track #2046).
+            if self._looks_like_ally(analysis_frame, tuple(int(v) for v in bbox[:4])):
+                self._sticky_hits[track_id] = 0
+                if self._snap_latch is not None and self._snap_latch.get("track_id") == track_id:
+                    self._snap_latch = None
+                continue
             heads[track_id] = head
             hx, hy = head
             err = float((hx - rx) ** 2 + (hy - ry) ** 2) ** 0.5
