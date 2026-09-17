@@ -548,7 +548,7 @@ class AntiCheatPipeline:
         # already demands a held line/lock, so this is a second, shorter
         # confirmation. Target-corroborated events (aim landed on a tracked
         # player) confirm quickly; free-space geometry needs longer.
-        min_persist_sec = 0.05 if associated_track_id is not None else 0.20
+        min_persist_sec = 0.04 if associated_track_id is not None else 0.16
         now = float(frame_context.timestamp)
         if self._flag_streak_type == self.last_event_type and self._flag_streak_since is not None:
             self._flag_streak += 1

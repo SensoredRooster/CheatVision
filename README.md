@@ -621,6 +621,49 @@ each way (20 frames at 60 fps, scaled to the feed rate). While Held: no overlays
 reset, STR/TREMOR = 0. A short raw skip while still Live only idles telemetry.
 The canvas always shows the live picture (never a held frame).
 
+## How alerts / flagging works (plain English)
+
+**Yes — CheatVision can alert even if you have never trained on cheating VODs.**
+
+The live path is **not** a machine-learning classifier that needs cheat examples
+first. It scores aim motion with rules and thresholds (camera translation under
+the reticle, path straightness, tremor/jerk, snap size, how long the pattern
+holds), then stacks extra gates: SceneGate (skip black / loading / frozen
+frames), HUD masking, a short persistence window, and optional YOLO player-box
+corroboration when the detector model is present.
+
+### There is no single "percent cheat" bar
+
+You do **not** need a score like "must be above 80% cheat" before something
+flags. The bar is a stack of hard gates. Roughly:
+
+1. **Aim metrics vs fixed thresholds** — examples on the current tuned path:
+   mean velocity around **14.5 px/step**, path straightness around **0.978**,
+   plus hold times (geometric line ~**0.20 s**, mechanical lock ~**0.10 s**).
+2. **Persistence** — the same flag type must keep firing for a short time
+   (~**0.04 s** if a tracked player is under the aim, ~**0.16 s** in free
+   space) before a CheatEvent is committed.
+3. **Extra snap / sticky rules** — ramp ratio, hold on head, etc. (see Aim
+   scoring below).
+
+The only "confidence" number that looks like a percentage in the pipeline is
+mostly for **YOLO player boxes** (default detect confidence ~0.35). That answers
+"is this a player?", **not** "how cheaty is this aim."
+
+### Tradeoff if you loosen the bar
+
+Looser thresholds / shorter holds = **more alerts** and a better shot at catch
+rate while you still lack known-cheat VODs — and a higher chance of false
+positives on legit play. Tighter settings (what we used after the clean Warzone
+baseline) drive false positives down. Clean clips control false alarms;
+**known-cheat VODs are still needed to measure recall** (how many real cheats
+you miss).
+
+Current defaults were nudged slightly looser than the zero-FP clean-set pass so
+the app is more willing to alert while cheat footage is still being gathered.
+Re-run your clean clips after any further threshold change before trusting live
+alerts.
+
 ## Aim scoring (`src/core/anomaly_detector.py`, `anti_cheat_pipeline.py`)
 
 FPS reticles sit at screen centre; cheats move the **camera**.
@@ -637,15 +680,15 @@ FPS reticles sit at screen centre; cheats move the **camera**.
    max(residual variance off a line, step variance); **jerk** = variance of the
    second difference (a bot tracking a *curving* target reads as tremor 10–16 on
    a line fit while the hand does nothing).
-5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 16 px, straightness ≥ 0.985 **and
-   jerk ≤ 4**, held **≥ 0.25 s**. The jerk condition came from two live false
+5. `UNNATURAL_GEOMETRIC_LINE`: velocity ≥ 14.5 px, straightness ≥ 0.978 **and
+   jerk ≤ 4**, held **≥ 0.20 s**. The jerk condition came from two live false
    positives: fast whips with straightness 0.99 but jerk 134 and 568 — a hand
    shaking hard along a straight-ish path is not a scripted line (which
    measures < 1). `MECHANICAL_LOCK_NO_TREMOR`: fast with tremor *or* jerk
-   ≤ 0.45 held ≥ 0.12 s. Hold clocks survive brief measurement dropouts.
+   ≤ 0.45 held ≥ 0.10 s. Hold clocks survive brief measurement dropouts.
 
 **Why time-based:** on ~5,600 analysed frames of legit 1440p144 Warzone,
-straightness ≥ 0.985 occurs 7–48× per clip (every flick is briefly straight),
+straightness ≥ 0.978 occurs 7–48× per clip (every flick is briefly straight),
 single steps reach 47 px, but fast + tremor ≤ 0.45 occurred **zero** times.
 Frame-count persistence also behaved differently at 60 vs 144 Hz.
 
@@ -654,7 +697,7 @@ Frame-count persistence also behaved differently at 60 vs 144 Hz.
 or a VOD's fps) picks the stride that lands nearest `analysis_rate_hz` and only
 changes it when the cadence leaves a 0.7–1.4× band, then calls
 `CrosshairKinematicsAnalyzer.set_sample_rate()`: velocity-like thresholds
-(16 px/step, snap 12, flick 26, sticky camera move 4) scale with the step time,
+(14.5 px/step, snap 12, flick 26, sticky camera move 4) scale with the step time,
 variance-like ones (tremor 0.45, jerk 4) with its square, step counts (lock
 streak 3, sticky hits 6) inversely, the window covers 0.9 s and the scene-gate
 hysteresis a third of a second. At the reference cadence every number is
@@ -670,8 +713,8 @@ Replica-aim with YOLO boxes (detections inside the profile's
 | `FLICK_SNAP` | one instant step ≥ 26 px and ≫ mean velocity landing near the nearest head; same ramp test and hold requirement as a snap |
 
 Kinematic flags without a replica event still need a YOLO box under the reticle
-when the detector is ready. A verdict must persist 0.05 s (target-corroborated)
-or 0.20 s (free-space) and is reported once per streak. Events are JSONL lines
+when the detector is ready. A verdict must persist 0.04 s (target-corroborated)
+or 0.16 s (free-space) and is reported once per streak. Events are JSONL lines
 in `logs/`.
 
 ## Profiles
