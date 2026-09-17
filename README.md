@@ -670,7 +670,7 @@ FPS reticles sit at screen centre; cheats move the **camera**.
 
 1. HUD-mask the analysis frame; zero facecam / chrome / chat pixels.
 2. Centre ROI (~22 %). Reticle = geometric centre unless a clearly isolated
-   bright mark sits within 12 px (the old refinement chased specks ±20 px and
+   bright mark sits within 11.4 px (the old refinement chased specks ±20 px and
    injected fake tremor).
 3. Phase correlation vs the previous ROI → scene translation; aim delta is the
    negation. Fine estimate from four edge bands, coarse whole-ROI estimate takes
@@ -697,7 +697,7 @@ Frame-count persistence also behaved differently at 60 vs 144 Hz.
 or a VOD's fps) picks the stride that lands nearest `analysis_rate_hz` and only
 changes it when the cadence leaves a 0.7–1.4× band, then calls
 `CrosshairKinematicsAnalyzer.set_sample_rate()`: velocity-like thresholds
-(13.8 px/step, snap 12, flick 26, sticky camera move 4) scale with the step time,
+(13.8 px/step, snap 11.4, flick 24.7, sticky camera move 3.8) scale with the step time,
 variance-like ones (tremor 0.45, jerk 4) with its square, step counts (lock
 streak 3, sticky hits 6) inversely, the window covers 0.9 s and the scene-gate
 hysteresis a third of a second. At the reference cadence every number is
@@ -708,9 +708,9 @@ Replica-aim with YOLO boxes (detections inside the profile's
 
 | event | idea |
 |---|---|
-| `SNAP_TO_TARGET` | an **instant** step ≥ 12 px (the frame before it ≤ 15 % of the step — humans ramp up, measured 0.6→14→37 px on a live false positive) landing ≤ 34 px from a head, moving toward where the head was, and then **held on that head ≥ 0.19 s** before it is reported (an assist lands and stays; a whipped hand overshoots or drifts) |
-| `STICKY_AIM` | reticle ≤ 22 px from a head while the *camera* moves, ≥ 6 hits (a perfect lock keeps the head still on screen) |
-| `FLICK_SNAP` | one instant step ≥ 26 px and ≫ mean velocity landing near the nearest head; same ramp test and hold requirement as a snap |
+| `SNAP_TO_TARGET` | an **instant** step ≥ 11.4 px (the frame before it ≤ 15 % of the step — humans ramp up, measured 0.6→14→37 px on a live false positive) landing ≤ 35.7 px from a head, moving toward where the head was, and then **held on that head ≥ 0.19 s** before it is reported (an assist lands and stays; a whipped hand overshoots or drifts) |
+| `STICKY_AIM` | reticle ≤ 23.1 px from a head while the *camera* moves, ≥ 5 hits (a perfect lock keeps the head still on screen) |
+| `FLICK_SNAP` | one instant step ≥ 24.7 px and ≫ mean velocity landing near the nearest head; same ramp test and hold requirement as a snap |
 
 Kinematic flags without a replica event still need a YOLO box under the reticle
 when the detector is ready. A verdict must persist 0.038 s (target-corroborated)
