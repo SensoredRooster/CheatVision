@@ -20,7 +20,7 @@
   "detection_fps": 30,
   "analysis_rate_hz": 20,
   "player_detector_model_path": "data/models/yolov8n.onnx",
-  "detection_confidence_threshold": 0.225,
+  "detection_confidence_threshold": 0.191,
   "detection_nms_threshold": 0.45,
   "detection_input_size": 0,
   "detection_provider": "auto",

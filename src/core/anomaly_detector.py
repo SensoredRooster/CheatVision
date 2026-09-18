@@ -55,15 +55,15 @@ class CrosshairKinematicsAnalyzer:
         self,
         window_size: int = 18,
         roi_ratio: float = 0.22,
-        velocity_threshold: float = 12.4,
-        straightness_threshold: float = 0.9746,
-        snap_threshold: float = 27.4,
-        zero_variance_epsilon: float = 0.495,
+        velocity_threshold: float = 10.5,
+        straightness_threshold: float = 0.9708,
+        snap_threshold: float = 23.3,
+        zero_variance_epsilon: float = 0.569,
         min_phase_response: float = 0.12,
         lock_streak: int = 3,
-        line_hold_seconds: float = 0.171,
-        lock_hold_seconds: float = 0.0855,
-        line_max_jerk: float = 4.4,
+        line_hold_seconds: float = 0.145,
+        lock_hold_seconds: float = 0.0727,
+        line_max_jerk: float = 5.06,
     ) -> None:
         self.window_size = window_size
         self.roi_ratio = roi_ratio

@@ -72,8 +72,8 @@ _MAX_BOX_AREA_RATIO = 0.6
 # false positives: 0.6 -> 14 -> 37 px and 5 -> 41 -> 46 px -- so the previous
 # step may be at most this fraction of the snap step. After landing, the aim
 # must stay on the head this long before the verdict is reported.
-_SNAP_RAMP_RATIO = 0.173
-_SNAP_HOLD_SECONDS = 0.171
+_SNAP_RAMP_RATIO = 0.199
+_SNAP_HOLD_SECONDS = 0.145
 # The aim rules are tuned for ~20 analysed samples a second (60 new pictures
 # analysed every third frame). set_feed_rate() keeps the analysis cadence in
 # this band around analysis_rate_hz by choosing the stride, and hands the exact
@@ -84,7 +84,7 @@ _MAX_ANALYSIS_STRIDE = 60
 _GATE_HYSTERESIS_SECONDS = 20.0 / 60.0
 _GATE_HYSTERESIS_FRAMES = (10, 120)
 # Sticky-aim hits are counted in analysed steps: this many at the reference cadence.
-_STICKY_NEED_REFERENCE = 4
+_STICKY_NEED_REFERENCE = 3
 
 
 def _clamp_frac(rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -132,7 +132,7 @@ class AntiCheatPipeline:
         dataset_exporter: PixelVisionDatasetExporter | None = None,
         target_resolution: tuple[int, int] = (2560, 1440),
         player_detector_model_path: str = "data/models/yolov8n.onnx",
-        detection_confidence_threshold: float = 0.225,
+        detection_confidence_threshold: float = 0.191,
         detection_nms_threshold: float = 0.45,
         detection_player_class_ids: list[int] | None = None,
         detection_input_size: int | None = None,
@@ -548,7 +548,7 @@ class AntiCheatPipeline:
         # already demands a held line/lock, so this is a second, shorter
         # confirmation. Target-corroborated events (aim landed on a tracked
         # player) confirm quickly; free-space geometry needs longer.
-        min_persist_sec = 0.034 if associated_track_id is not None else 0.137
+        min_persist_sec = 0.029 if associated_track_id is not None else 0.116
         now = float(frame_context.timestamp)
         if self._flag_streak_type == self.last_event_type and self._flag_streak_since is not None:
             self._flag_streak += 1
@@ -691,13 +691,13 @@ class AntiCheatPipeline:
         # follows the analysis cadence (see set_feed_rate): at 20 samples/s
         # rate == 1.0 and these are the tuned numbers.
         rate = float(getattr(self.crosshair_analyzer, "rate_scale", 1.0) or 1.0)
-        snap_min = 10.3 * scale
+        snap_min = 8.8 * scale
         snap_step = snap_min * rate
-        land_px = 39.3 * scale
-        sticky_err = 25.4 * scale
-        sticky_cam_move = 3.4 * scale * rate
+        land_px = 45.2 * scale
+        sticky_err = 29.2 * scale
+        sticky_cam_move = 2.9 * scale * rate
         sticky_need = max(3, int(round(_STICKY_NEED_REFERENCE / rate)))
-        flick_px = 22.2 * scale * rate
+        flick_px = 18.9 * scale * rate
         rx, ry = float(reticle[0]), float(reticle[1])
         dx = float(metrics.get("last_dx") or 0.0)
         dy = float(metrics.get("last_dy") or 0.0)
