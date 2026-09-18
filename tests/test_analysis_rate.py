@@ -142,9 +142,11 @@ class AnalyserSampleRateTests(unittest.TestCase):
             self.assertIn(flagged["event_type"], {"UNNATURAL_GEOMETRIC_LINE", "MECHANICAL_LOCK_NO_TREMOR"})
 
     def test_without_rate_correction_the_fast_feed_misses_the_same_pan(self) -> None:
-        # Still believes it sees 20 samples/s: 7 px per step reads as slow, so nothing is flagged.
+        # Still believes it sees 20 samples/s. Use 6 px/step (360 px/s physical): after the
+        # threshold loosen, 7 px/step already trips MECHANICAL_LOCK when under-read, but 6 px
+        # still reads as too slow to flag. The corrected sibling above keeps 7/21 px at 420 px/s.
         untold = CrosshairKinematicsAnalyzer()
-        self.assertIsNone(_pan(untold, 60.0, 7, 1.5))
+        self.assertIsNone(_pan(untold, 60.0, 6, 1.5))
 
 
 class HighRefreshPipelineTests(unittest.TestCase):
