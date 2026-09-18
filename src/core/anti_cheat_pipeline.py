@@ -85,6 +85,9 @@ _GATE_HYSTERESIS_SECONDS = 20.0 / 60.0
 _GATE_HYSTERESIS_FRAMES = (10, 120)
 # Sticky-aim hits are counted in analysed steps: this many at the reference cadence.
 _STICKY_NEED_REFERENCE = 3
+# Off: Warzone squad mates use distinct colors (only one is blue) and enemies
+# also draw nameplates, so HSV "ally blue" was incomplete and misleading.
+_ALLY_NAMEPLATE_GATE = False
 
 
 def _clamp_frac(rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -643,11 +646,12 @@ class AntiCheatPipeline:
     def _looks_like_ally(self, frame: np.ndarray | None, bbox: tuple[int, int, int, int]) -> bool:
         """True when the floating nameplate above a track reads squad-blue.
 
-        Warzone paints friendlies (and PROTECT contracts) in saturated blue /
-        cyan over the head. Enemies read orange/yellow. Sticky / snap / flick
-        must not latch those ally boxes — track #2046 on JaCrispy was a clean
-        false sticky from friend-as-target geometry.
+        Disabled via _ALLY_NAMEPLATE_GATE: only one squad color is blue, other
+        teammates use different hues, and enemies also show nameplates, so this
+        heuristic was incomplete. Body kept for a future threat-color rethink.
         """
+        if not _ALLY_NAMEPLATE_GATE:
+            return False
         if frame is None or frame.ndim != 3 or frame.shape[2] < 3:
             return False
         fh, fw = frame.shape[:2]
