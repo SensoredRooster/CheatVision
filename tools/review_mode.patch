@@ -1,0 +1,16 @@
+--- a/src/core/anti_cheat_pipeline.py
++++ b/src/core/anti_cheat_pipeline.py
+@@ -49,12 +49,15 @@
+             handle.write(json.dumps(asdict(event)) + "\n")
+ 
+ 
+-SOURCE_PROFILES = ("hdmi_game", "stream_window", "vod_file")
++SOURCE_PROFILES = ("hdmi_game", "stream_window", "vod_file", "spec_killcam")
+ SOURCE_PROFILE_LABELS = {
+     "hdmi_game": "HDMI GAME",
+     "stream_window": "STREAM WINDOW",
+     "vod_file": "VOD FILE",
++    "spec_killcam": "SPEC / KILLCAM",
+ }
++_REVIEW_PROFILES = frozenset({"vod_file", "spec_killcam"})
++_REVIEW_SOURCE_HINTS = ("vod", "playback", "timeline", "dataset", "workflow", "clip", "review")
