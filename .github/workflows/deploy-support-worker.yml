@@ -1,0 +1,32 @@
+name: Deploy Cloudflare Support Collector
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare/support-worker/**"
+      - ".github/workflows/deploy-support-worker.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install Wrangler
+        run: npm install --global wrangler@latest
+      - name: Ensure R2 bucket exists
+        working-directory: cloudflare/support-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "9c5f81e73d237bab60bdb0bc2085cd56"
+        run: wrangler r2 bucket create cheatvision-support-logs || true
+      - name: Deploy Worker
+        working-directory: cloudflare/support-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "9c5f81e73d237bab60bdb0bc2085cd56"
+        run: wrangler deploy
