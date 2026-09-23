@@ -29,6 +29,7 @@ from pathlib import Path
 APP_NAME = "CheatVision"
 REPOSITORY_URL = "https://github.com/SensoredRooster/CheatVision"
 ISSUES_URL = REPOSITORY_URL + "/issues/new"
+DEFAULT_UPLOAD_URL = "https://cheatvision-support.sensoredrooster-com.workers.dev/upload"
 SESSION_ID = uuid.uuid4().hex[:12]
 STARTED_AT = datetime.now(timezone.utc).isoformat()
 MAX_LOG_BYTES = 10 * 1024 * 1024
@@ -140,7 +141,7 @@ def health_snapshot(project_root: str | Path | None = None) -> dict:
         "settings_present": (root / "config" / "settings.json").is_file(),
         "local_settings_present": (root / "config" / "settings.local.json").is_file(),
         "model_directory_present": (root / "data" / "models").is_dir(),
-        "upload_configured": bool(os.environ.get("CHEATVISION_SUPPORT_UPLOAD_URL", "").strip()),
+        "upload_configured": bool(os.environ.get("CHEATVISION_SUPPORT_UPLOAD_URL", "").strip() or DEFAULT_UPLOAD_URL),
         "repository": REPOSITORY_URL,
         **_gpu_snapshot(),
     }
@@ -194,7 +195,7 @@ def create_support_bundle(project_root: str | Path | None = None) -> Path:
 
 
 def upload_support_bundle(project_root: str | Path | None = None, url: str | None = None) -> dict:
-    endpoint = (url or os.environ.get("CHEATVISION_SUPPORT_UPLOAD_URL", "")).strip()
+    endpoint = (url or os.environ.get("CHEATVISION_SUPPORT_UPLOAD_URL", "").strip() or DEFAULT_UPLOAD_URL).strip()
     if not endpoint:
         raise RuntimeError("CheatVision support upload endpoint is not configured.")
     bundle = create_support_bundle(project_root)
