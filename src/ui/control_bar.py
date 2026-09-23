@@ -77,6 +77,7 @@ class ControlBar(QWidget):
     analyzeDisplayToggled = Signal(bool)
     captureModeChanged = Signal(int, int, int)
     toolsPanelToggled = Signal(bool)
+    supportRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -131,6 +132,13 @@ class ControlBar(QWidget):
 
         self.capture_mode_group = self._build_capture_mode_group()
         layout.addWidget(self.capture_mode_group)
+        layout.addSpacing(8)
+
+        self.support_btn = QPushButton("SUPPORT")
+        self.support_btn.setFixedHeight(26)
+        self.support_btn.setToolTip("Open Support & Diagnostics.")
+        self.support_btn.clicked.connect(self.supportRequested.emit)
+        layout.addWidget(self.support_btn)
 
         self.analyze_display_checkbox = QCheckBox("Analyze this display anyway")
         self.analyze_display_checkbox.setToolTip(
