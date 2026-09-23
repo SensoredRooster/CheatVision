@@ -46,8 +46,9 @@ def _downscale(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
 _TELEMETRY_EMIT_INTERVAL_SEC = 1.0 / 20.0
 # Upper bound on how often the render worker will build a display frame. The
 # worker always renders the *latest* source frame, so a slower machine simply
-# skips frames rather than falling behind.
-_RENDER_MAX_FPS = 240
+# skips frames rather than falling behind. Rendering faster than the normal
+# 60 Hz display refresh only floods the Qt event loop with paint callbacks.
+_RENDER_MAX_FPS = 60
 # Live feed-rate reporting and starvation detection (see CaptureWorker).
 _FEED_RATE_REPORT_INTERVAL_SEC = 1.0
 _STARVED_RATIO = 0.35

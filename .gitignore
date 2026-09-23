@@ -28,6 +28,7 @@ startup_crash.log
 
 data/eval_synthetic/
 data/training.csv
+data/_clean_fp_*/
 
 
 # Generated evaluation output
