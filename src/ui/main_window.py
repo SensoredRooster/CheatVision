@@ -34,6 +34,7 @@ from src.ui.branding import brand_icon
 from src.ui.control_bar import ControlBar
 from src.ui.left_rail import LeftRail
 from src.ui.playback_controls import PlaybackControlsBar
+from src.ui.support_dialog import SupportDialog
 from src.ui.theme import APP_STYLESHEET, WARNING
 from src.ui.video_canvas import VideoCanvas
 from src.ui.workers import AnalysisWorker, CaptureWorker, DetectionWorker, PlaybackWorker, RenderWorker
@@ -141,6 +142,7 @@ class MainWindow(QMainWindow):
         self.control_bar.rescanDevicesRequested.connect(self._on_rescan_devices_requested)
         self.control_bar.captureModeChanged.connect(self._on_capture_mode_changed)
         self.control_bar.toolsPanelToggled.connect(self._on_tools_panel_toggled)
+        self.control_bar.supportRequested.connect(self._on_support_requested)
         layout.addWidget(self.control_bar, 0)
         self.status_label = self.control_bar.status_label
 
@@ -181,6 +183,11 @@ class MainWindow(QMainWindow):
         self.left_rail.set_mode_picker_enabled(self._stream_mode == "live")
         self.left_rail.set_mask_profile(self._live_mask_profile())
         self._update_signal_card()
+
+    def _on_support_requested(self) -> None:
+        project_root = self.settings.get("project_root", str(Path.cwd()))
+        dialog = SupportDialog(project_root, self)
+        dialog.exec()
 
     # ------------------------------------------------------------------
     # Startup / device lifecycle
