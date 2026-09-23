@@ -201,6 +201,8 @@ def upload_support_bundle(project_root: str | Path | None = None, url: str | Non
     bundle = create_support_bundle(project_root)
     request = urllib.request.Request(endpoint, data=bundle.read_bytes(), method="POST")
     request.add_header("Content-Type", "application/zip")
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", "CheatVision/1.0 (+https://github.com/SensoredRooster/CheatVision)")
     request.add_header("X-CheatVision-Session", SESSION_ID)
     request.add_header("X-CheatVision-Filename", bundle.name)
     try:
