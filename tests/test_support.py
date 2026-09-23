@@ -57,7 +57,7 @@ def test_support_bundle_excludes_gameplay_data():
                 assert "C:/private/gameplay.mp4" not in merged
 
 
-def test_upload_requires_endpoint():
+def test_default_support_endpoint_is_wired():
     with mock.patch.dict(os.environ, {"CHEATVISION_SUPPORT_UPLOAD_URL": ""}, clear=False):
-        with pytest.raises(RuntimeError):
-            support.upload_support_bundle()
+        assert support.DEFAULT_UPLOAD_URL == "https://cheatvision-support.sensoredrooster-com.workers.dev/upload"
+        assert support.health_snapshot()["upload_configured"] is True
