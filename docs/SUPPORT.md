@@ -35,3 +35,13 @@ Support bundles intentionally exclude gameplay video, captured frames, evidence 
 This storage is separate from SubScript, Universal AI Studio, RCM Tool, and SonicScout2.0.
 
 The GitHub deployment workflow uses the repository secret `CLOUDFLARE_API_TOKEN`.
+## Tester Share
+
+CheatVision's tester file portal is separate from support diagnostics:
+
+- Portal: `https://cheatvision-share.sensoredrooster-com.workers.dev`
+- Private R2 bucket: `cheatvision-share`
+- Open from **SUPPORT → TESTER SHARE**
+
+Folders are `Releases`, `Tester Uploads`, `Screenshots`, `Bug Reports`, `Logs`, and `Archived`. Tester access can browse/download and upload to tester-facing folders; admin access also manages releases, Latest, deletes, and archives.
+
