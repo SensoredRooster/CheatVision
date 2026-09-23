@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from src.ui.branding import brand_icon
 from src.ui.main_window import MainWindow
+from src.support import log_event, start_heartbeat, support_root
 
 # OpenCV defaults to one pool thread per logical core (20 here). For the small
 # per-frame resizes this app does, the extra threads mostly spin-wait: capping
@@ -63,6 +64,8 @@ def _claim_taskbar_identity() -> None:
 def main() -> None:
     cv2.setNumThreads(_OPENCV_THREADS)
     settings = load_settings()
+    start_heartbeat()
+    log_event("app_started", project_root=settings.get("project_root"))
     app = QApplication(sys.argv)
     _claim_taskbar_identity()
     app.setWindowIcon(brand_icon())
@@ -75,9 +78,13 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        crash_log_path = Path(__file__).resolve().parent.parent / "startup_crash.log"
+        crash_log_path = support_root() / "startup_crash.log"
         with crash_log_path.open("w", encoding="utf-8") as handle:
             traceback.print_exc(file=handle)
+        try:
+            log_event("startup_crash", level="CRITICAL", crash_log=str(crash_log_path))
+        except Exception:
+            pass
         traceback.print_exc()
         print(f"\n[FATAL] Startup failed. Full traceback written to {crash_log_path}", file=sys.stderr)
         sys.exit(1)
