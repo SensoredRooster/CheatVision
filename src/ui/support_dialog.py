@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -100,6 +101,12 @@ class SupportDialog(QDialog):
         repo_btn = QPushButton("REPOSITORY")
         repo_btn.clicked.connect(open_repository)
         buttons.addWidget(repo_btn)
+
+        share_btn = QPushButton("TESTER SHARE")
+        share_btn.clicked.connect(
+            lambda: webbrowser.open("https://cheatvision-share.sensoredrooster-com.workers.dev")
+        )
+        buttons.addWidget(share_btn)
 
         layout.addLayout(buttons)
 
