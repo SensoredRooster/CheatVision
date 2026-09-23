@@ -766,3 +766,26 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | `assets/brand/` | the crosshair mark (`cheatvision_mark.png`, `cheatvision.ico`) and `BRAND.md` |
 | `tools/` | `setup_check.py` (what is missing and how to fix it; `--get-model`), `export_player_model.py`, `import_dataset.py`, `make_synthetic_eval.py`, `fetch_anticheatpt.py`, `probe_capture_rate.py` (delivered/unique fps per pixel format) |
 | `tests/` | 89 unit tests |
+
+## Support, diagnostics, and tester sharing
+
+CheatVision includes local-first support telemetry and two isolated Cloudflare services. These support systems do not change the analysis pipeline.
+
+### Support diagnostics
+
+- Worker: `https://cheatvision-support.sensoredrooster-com.workers.dev`
+- Upload endpoint: `https://cheatvision-support.sensoredrooster-com.workers.dev/upload`
+- R2 bucket: `cheatvision-support-logs`
+- Support bundles intentionally exclude captured gameplay, evidence clips, model files, and gameplay telemetry rolls.
+- `CHEATVISION_SUPPORT_UPLOAD_URL` remains available as a development override.
+
+### Tester Share
+
+- Portal: `https://cheatvision-share.sensoredrooster-com.workers.dev`
+- R2 bucket: `cheatvision-share`
+- Open it from **SUPPORT → TESTER SHARE**.
+- Folders: `Releases`, `Tester Uploads`, `Screenshots`, `Bug Reports`, `Logs`, `Archived`
+
+Testers can browse/download shared material and upload only to tester-facing folders. Admin access also manages releases, **Latest**, deletes, and archive content.
+
+See [docs/SUPPORT.md](docs/SUPPORT.md) and [docs/TESTER_SHARE.md](docs/TESTER_SHARE.md).
