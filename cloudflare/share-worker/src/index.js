@@ -3,8 +3,8 @@ const SESSION_SECONDS = 12 * 60 * 60;
 const FOLDERS = ["Releases","Tester Uploads","Screenshots","Bug Reports","Logs","Archived"];
 const TESTER_UPLOAD_FOLDERS = new Set(["Tester Uploads", "Screenshots", "Bug Reports", "Logs"]);
 const META_LATEST = "__portal/latest.json";
-const ADMIN_PASSWORD_HASH = "f6ad509e94b619cf69b1030d44dd2ac08842df61705c4c7e4000636eacac6dba";
-const TESTER_PASSWORD_HASH = "ac32dcafa76a473d4ade6112958993f9fe127666f96ea55444ecf3faf053ff16";
+const ADMIN_PASSWORD_HASH = "3b612c75a7b5048a435fb6ec81e52ff92d6d795a8b5a9c17070f6a63c97a53b2";
+const TESTER_PASSWORD_HASH = "1095b31490de5d8009970ff96a2414ee55aedeb4b86e7e867ec68f4f523109fc";
 const encoder = new TextEncoder();
 
 function baseHeaders(extra = {}) {
