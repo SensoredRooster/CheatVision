@@ -28,6 +28,8 @@ Purpose: receive redacted support ZIPs created by the application after explicit
 
 Purpose: authenticated file sharing between the developer and testers.
 
+Authentication uses a dedicated D1 database (`cheatvision-share-auth`). The manual deploy workflow creates the database if needed and applies its versioned schema before deploying the Worker. R2 continues to hold the shared files; this auth change does not move or delete any R2 objects.
+
 Portal folders:
 
 - `Releases`
@@ -51,8 +53,12 @@ Do not make the R2 buckets public. Browser access should always pass through the
 
 Cloudflare deployment uses the repository Actions secret `CLOUDFLARE_API_TOKEN`.
 
-Tester Share passwords are project-specific. Their plaintext values are distributed privately; Git contains only their SHA-256 hashes.
+That Cloudflare API token must be permitted to edit Workers scripts/secrets, D1 databases, and R2 buckets in this account; the new auth setup adds D1 access to the previous Worker/R2 deployment needs.
+
+Before deploying the per-user account system, add the repository Actions secret `SHARE_PORTAL_BOOTSTRAP_SECRET`. Use a private, high-entropy value and keep it in a password manager. The workflow installs it as the Worker secret `BOOTSTRAP_SECRET`; it is used only to create or recover the single admin account.
+
+After deployment, open `/setup` and create the admin account with a unique password of at least 14 characters. The former shared `Admin123` and `Tester123` passwords are not used by the per-user system. From the admin portal, create each tester account and privately share its one-time setup link. Testers who forget their password ask the admin for a one-time reset link. Setup/reset links expire after 20 minutes and can be used once. The admin can disable a tester without deleting their uploaded files.
 
 ## Redeployment
 
-Production deployment workflows are manual-only after initial verification. Use GitHub Actions when a Worker or Wrangler configuration changes, and confirm the workflow's post-deploy `/health` check passes.
+Production deployment workflows are manual-only after initial verification. Use GitHub Actions when a Worker or Wrangler configuration changes, and confirm the workflow's post-deploy `/health` check passes. The deployment action provisions the D1 auth database and updates the generated binding in its temporary checkout; the deployed Worker uses D1 for users/sessions and the existing private R2 bucket for files.

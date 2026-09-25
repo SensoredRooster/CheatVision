@@ -4,6 +4,7 @@ __pycache__/
 *.pyd
 .venv/
 venv/
+.wrangler/
 .env
 # Per-machine choices the app saves (capture device, MODE pin). Never shipped.
 config/settings.local.json

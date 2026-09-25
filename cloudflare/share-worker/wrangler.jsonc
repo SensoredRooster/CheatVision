@@ -10,6 +10,14 @@
       "bucket_name": "cheatvision-share"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "cheatvision-share-auth",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
   "ratelimits": [
     {
       "name": "AUTH_RATE_LIMITER",

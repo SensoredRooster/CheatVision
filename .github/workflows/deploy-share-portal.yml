@@ -41,6 +41,30 @@ jobs:
         working-directory: cloudflare/share-worker
         run: wrangler whoami
 
+      - name: Validate administrator setup and recovery key
+        shell: bash
+        env:
+          PORTAL_BOOTSTRAP_SECRET: ${{ secrets.SHARE_PORTAL_BOOTSTRAP_SECRET }}
+        run: |
+          if [ -z "$PORTAL_BOOTSTRAP_SECRET" ]; then
+            echo "Add the SHARE_PORTAL_BOOTSTRAP_SECRET repository secret before deploying."
+            exit 1
+          fi
+
+      - name: Ensure per-user auth database exists
+        run: node cloudflare/share-worker/scripts/ensure-auth-database.mjs
+
+      - name: Apply auth database schema
+        working-directory: cloudflare/share-worker
+        run: wrangler d1 migrations apply cheatvision-share-auth --remote
+
+      - name: Configure administrator setup and recovery key
+        working-directory: cloudflare/share-worker
+        shell: bash
+        env:
+          PORTAL_BOOTSTRAP_SECRET: ${{ secrets.SHARE_PORTAL_BOOTSTRAP_SECRET }}
+        run: printf '%s' "$PORTAL_BOOTSTRAP_SECRET" | wrangler secret put BOOTSTRAP_SECRET
+
       - name: Ensure tester-share R2 bucket exists
         working-directory: cloudflare/share-worker
         run: wrangler r2 bucket create cheatvision-share || true

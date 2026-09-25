@@ -20,5 +20,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+      - name: Install Wrangler
+        run: npm install --global wrangler@4
       - name: Syntax check Worker
         run: node --check cloudflare/share-worker/src/index.js
+      - name: Run local auth and permission smoke tests
+        run: node cloudflare/share-worker/tests/auth-smoke.mjs
