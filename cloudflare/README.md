@@ -34,12 +34,17 @@ Portal folders:
 
 - `Releases`
 - `Tester Uploads`
+- `VODs/Incoming`
+- `VODs/Reviewed`
+- `VODs/Archived`
 - `Screenshots`
 - `Bug Reports`
 - `Logs`
 - `Archived`
 
-Tester role can browse/download and upload only to tester-facing folders. Admin role additionally manages releases, the **Latest** pointer, deletes, and archived content.
+Tester role can browse/download and upload only to tester-facing folders. VOD uploads from testers go only to `VODs/Incoming`; reviewed and archived VOD areas are admin-managed. Admin role additionally manages releases, the **Latest** pointer, deletes, and archived content.
+
+Files up to 50 MB use the simple upload endpoint. Larger files automatically use R2 multipart upload in 50 MB parts, with a 10 GB per-file safety ceiling. Multipart uploads are aborted on client-side failure when possible, avoiding the previous 75 MB whole-file bottleneck without making the R2 bucket public.
 
 ## Separation rules
 
