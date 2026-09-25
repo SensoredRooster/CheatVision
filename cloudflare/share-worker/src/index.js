@@ -1,3 +1,5 @@
+import { pbkdf2 } from "node:crypto";
+
 const MAX_UPLOAD_BYTES = 75 * 1024 * 1024;
 const MULTIPART_PART_BYTES = 50 * 1024 * 1024;
 const MAX_MULTIPART_BYTES = 10 * 1024 * 1024 * 1024;
@@ -49,17 +51,23 @@ function randomToken(bytes = 32) {
   crypto.getRandomValues(value);
   return b64url(value);
 }
+function pbkdf2Sha256(password, salt, iterations) {
+  return new Promise((resolve, reject) => {
+    pbkdf2(password, salt, iterations, 32, "sha256", (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(new Uint8Array(derivedKey));
+    });
+  });
+}
 async function passwordDigest(password, salt = crypto.getRandomValues(new Uint8Array(16))) {
-  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: PASSWORD_ITERATIONS }, key, 256);
-  return { salt: b64url(salt), hash: b64url(new Uint8Array(bits)), iterations: PASSWORD_ITERATIONS };
+  const bits = await pbkdf2Sha256(password, salt, PASSWORD_ITERATIONS);
+  return { salt: b64url(salt), hash: b64url(bits), iterations: PASSWORD_ITERATIONS };
 }
 async function passwordMatches(password, user) {
   if (!user.password_salt || !user.password_hash) return false;
-  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   const salt = fromB64url(user.password_salt);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: Number(user.password_iterations) || PASSWORD_ITERATIONS }, key, 256);
-  return constantEqual(b64url(new Uint8Array(bits)), user.password_hash);
+  const bits = await pbkdf2Sha256(password, salt, Number(user.password_iterations) || PASSWORD_ITERATIONS);
+  return constantEqual(b64url(bits), user.password_hash);
 }
 function validEmail(value) {
   const email = String(value || "").trim().toLowerCase();
