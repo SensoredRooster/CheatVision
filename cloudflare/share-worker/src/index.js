@@ -169,8 +169,14 @@ export default { async fetch(request, env) {
     if (request.method === "GET" && url.pathname === "/setup") return html(SETUP);
 
     if (request.method === "POST" && url.pathname === "/auth/bootstrap") {
-      const rate = await env.AUTH_RATE_LIMITER.limit({ key: "bootstrap:" + ip });
-      if (!rate.success) return json({ error: "Please wait before trying again." }, 429);
+      try {
+        const rate = await env.AUTH_RATE_LIMITER.limit({ key: "bootstrap:" + ip });
+        if (!rate.success) return json({ error: "Please wait before trying again." }, 429);
+      } catch (error) {
+        // The setup key still protects this route. Do not make first-time admin
+        // setup impossible if the optional rate-limit binding is temporarily unhealthy.
+        console.error("Bootstrap rate limiter failed", error?.message || "unknown error");
+      }
       let body;
       try { body = await request.json(); } catch { return json({ error: "Invalid request." }, 400); }
       const setupSecret = String(env.BOOTSTRAP_SECRET || "");
@@ -180,21 +186,43 @@ export default { async fetch(request, env) {
       const password = String(body?.password || "");
       if (!email) return json({ error: "Enter a valid email address." }, 400);
       if (!validPassword(password)) return json({ error: "Choose a password between 14 and 128 characters." }, 400);
-      const digest = await passwordDigest(password);
-      const existingAdmin = await env.AUTH_DB.prepare("SELECT user_id,email FROM users WHERE role='admin' LIMIT 1").first();
+
+      let digest;
+      try {
+        digest = await passwordDigest(password);
+      } catch (error) {
+        console.error("Bootstrap password hashing failed", error?.message || "unknown error");
+        return json({ error: "Administrator password setup failed (bootstrap-crypto)." }, 500);
+      }
+
+      let existingAdmin;
+      try {
+        existingAdmin = await env.AUTH_DB.prepare("SELECT user_id,email FROM users WHERE role='admin' LIMIT 1").first();
+      } catch (error) {
+        console.error("Bootstrap database read failed", error?.message || "unknown error");
+        return json({ error: "Administrator database check failed (bootstrap-db-read)." }, 500);
+      }
+
       if (existingAdmin) {
         if (existingAdmin.email.toLowerCase() !== email) return json({ error: "That email is not the configured administrator account." }, 403);
-        await env.AUTH_DB.prepare(`UPDATE users SET password_salt=?,password_hash=?,password_iterations=?,is_active=1,auth_version=auth_version+1
-          WHERE user_id=? AND role='admin'`).bind(digest.salt, digest.hash, digest.iterations, existingAdmin.user_id).run();
+        try {
+          await env.AUTH_DB.prepare(`UPDATE users SET password_salt=?,password_hash=?,password_iterations=?,is_active=1,auth_version=auth_version+1
+            WHERE user_id=? AND role='admin'`).bind(digest.salt, digest.hash, digest.iterations, existingAdmin.user_id).run();
+        } catch (error) {
+          console.error("Bootstrap database update failed", error?.message || "unknown error");
+          return json({ error: "Administrator password save failed (bootstrap-db-update)." }, 500);
+        }
         return json({ ok: true, recovered: true });
       }
+
       try {
         await env.AUTH_DB.prepare(`INSERT INTO users
           (user_id,email,role,password_salt,password_hash,password_iterations,is_active,created_at)
           VALUES (?,?,?,?,?,?,1,?)`)
           .bind(crypto.randomUUID(), email, "admin", digest.salt, digest.hash, digest.iterations, Math.floor(Date.now() / 1000)).run();
-      } catch {
-        return json({ error: "Admin setup could not be completed. It may already have been claimed." }, 409);
+      } catch (error) {
+        console.error("Bootstrap database insert failed", error?.message || "unknown error");
+        return json({ error: "Administrator account creation failed (bootstrap-db-insert)." }, 500);
       }
       return json({ ok: true });
     }
