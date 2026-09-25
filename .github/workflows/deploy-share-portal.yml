@@ -2,6 +2,10 @@ name: Deploy Tester Share Portal
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-share-portal.yml"
 
 jobs:
   deploy:
