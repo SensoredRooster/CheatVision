@@ -1,11 +1,9 @@
-import { pbkdf2 } from "node:crypto";
-
 const MAX_UPLOAD_BYTES = 75 * 1024 * 1024;
 const MULTIPART_PART_BYTES = 50 * 1024 * 1024;
 const MAX_MULTIPART_BYTES = 10 * 1024 * 1024 * 1024;
 const SESSION_SECONDS = 12 * 60 * 60;
 const AUTH_TOKEN_SECONDS = 20 * 60;
-const PASSWORD_ITERATIONS = 25000;
+const PASSWORD_ITERATIONS = 600000;
 const FOLDERS = ["Releases","Tester Uploads","VODs","Screenshots","Bug Reports","Logs","Archived"];
 const TESTER_UPLOAD_FOLDERS = new Set(["Tester Uploads", "Screenshots", "Bug Reports", "Logs"]);
 const META_LATEST = "__portal/latest.json";
@@ -51,24 +49,26 @@ function randomToken(bytes = 32) {
   crypto.getRandomValues(value);
   return b64url(value);
 }
-function pbkdf2Sha256(password, salt, iterations) {
-  return new Promise((resolve, reject) => {
-    pbkdf2(password, salt, iterations, 32, "sha256", (error, derivedKey) => {
-      if (error) reject(error);
-      else resolve(new Uint8Array(derivedKey));
-    });
-  });
+function validVerifier(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 }
-async function passwordDigest(password, salt = crypto.getRandomValues(new Uint8Array(16))) {
-  const bits = await pbkdf2Sha256(password, salt, PASSWORD_ITERATIONS);
-  return { salt: b64url(salt), hash: b64url(bits), iterations: PASSWORD_ITERATIONS };
+async function verifierDigest(verifier) {
+  return { salt: "client-pbkdf2-sha256-v1", hash: await sha256Hex(verifier), iterations: PASSWORD_ITERATIONS };
 }
-async function passwordMatches(password, user) {
-  if (!user.password_salt || !user.password_hash) return false;
-  const salt = fromB64url(user.password_salt);
-  const bits = await pbkdf2Sha256(password, salt, Number(user.password_iterations) || PASSWORD_ITERATIONS);
-  return constantEqual(b64url(bits), user.password_hash);
+async function verifierMatches(verifier, user) {
+  if (!validVerifier(verifier) || !user?.password_hash) return false;
+  return constantEqual(await sha256Hex(verifier), user.password_hash);
 }
+const CLIENT_AUTH_JS = `
+async function derivePasswordVerifier(email,password){
+  const normalized=String(email||"").trim().toLowerCase();
+  const enc=new TextEncoder();
+  const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
+  const salt=enc.encode("CheatVision Tester Share|"+normalized);
+  const bits=new Uint8Array(await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt,iterations:600000},key,256));
+  let binary=""; for(const b of bits) binary+=String.fromCharCode(b);
+  return btoa(binary).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/g,"");
+}`;
 function validEmail(value) {
   const email = String(value || "").trim().toLowerCase();
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "";
@@ -115,7 +115,7 @@ async function issueToken(env, user, purpose) {
     env.AUTH_DB.prepare("INSERT INTO auth_tokens (token_hash,user_id,purpose,expires_at,created_at) VALUES (?,?,?,?,?)")
       .bind(hash, user.user_id, purpose, now + AUTH_TOKEN_SECONDS, now),
   ]);
-  return `${PORTAL_ORIGIN}/reset?token=${encodeURIComponent(raw)}`;
+  return `${PORTAL_ORIGIN}/reset?token=${encodeURIComponent(raw)}&email=${encodeURIComponent(user.email)}`;
 }
 function normalizeKey(raw) {
   let value = decodeURIComponent(String(raw || "")).replace(/\\/g, "/");
@@ -140,13 +140,13 @@ async function readLatest(env) {
 const LOGIN = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CheatVision Tester Share</title>
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,460px);padding:28px;border-radius:22px;background:linear-gradient(180deg,#151b2a,#0e1320);border:1px solid #293246;box-shadow:0 24px 70px #0008}.eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#7dd3fc;font-weight:800}h1{margin:8px 0 6px;font-size:28px}.muted{color:#9da8bc;line-height:1.5}input,button{width:100%;margin-top:12px;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:12px 14px;font:inherit}button{background:#2563eb;border-color:#3b82f6;font-weight:800;cursor:pointer}.error{min-height:22px;color:#fca5a5;margin-top:10px}a{color:#7dd3fc}</style></head>
 <body><main class="card"><div class="eyebrow">Private tester share</div><h1>CheatVision</h1><p class="muted">Sign in with the email and password assigned to your account. Ask the administrator for an account or reset link if needed.</p><input id="email" type="email" autocomplete="username" placeholder="Email address"><input id="password" type="password" autocomplete="current-password" placeholder="Password"><button id="login">Sign in</button><p><a href="/forgot">Forgot password?</a></p><div class="error" id="error"></div></main>
-<script>document.getElementById("login").onclick=async()=>{const b=document.getElementById("login");b.disabled=true;const r=await fetch("/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email:document.getElementById("email").value,password:document.getElementById("password").value})});if(r.ok)location.href="/";else{const d=await r.json().catch(()=>({}));document.getElementById("error").textContent=d.error||"Sign in failed.";b.disabled=false;}};document.getElementById("password").addEventListener("keydown",e=>{if(e.key==="Enter")document.getElementById("login").click()});</script></body></html>`;
+<script>${CLIENT_AUTH_JS}document.getElementById("login").onclick=async()=>{const b=document.getElementById("login"),email=document.getElementById("email").value,password=document.getElementById("password").value;b.disabled=true;try{const verifier=await derivePasswordVerifier(email,password);const r=await fetch("/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email,password_verifier:verifier})});if(r.ok)location.href="/";else{const d=await r.json().catch(()=>({}));document.getElementById("error").textContent=d.error||"Sign in failed.";b.disabled=false;}}catch(e){document.getElementById("error").textContent="Could not securely prepare the password.";b.disabled=false;}};document.getElementById("password").addEventListener("keydown",e=>{if(e.key==="Enter")document.getElementById("login").click()});</script></body></html>`;
 
 const FORGOT = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Password reset</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111827;border:1px solid #293246}a{color:#7dd3fc}.muted{color:#9da8bc;line-height:1.5}</style></head><body><main class="card"><h1>Need a password reset?</h1><p class="muted">Password resets are handled by the portal administrator. Contact them directly; they can generate a private, one-time reset link that expires in 20 minutes.</p><a href="/login">Back to sign in</a></main></body></html>`;
 
-const RESET = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set your password</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111827;border:1px solid #293246}input,button{width:100%;margin-top:12px;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:12px 14px;font:inherit}button{background:#2563eb;font-weight:800}.muted{color:#9da8bc;line-height:1.5}</style></head><body><main class="card"><h1>Set a new password</h1><p class="muted">Use at least 14 characters. This one-time link expires after 20 minutes.</p><input id="password" type="password" autocomplete="new-password" placeholder="New password (14+ characters)"><input id="confirm" type="password" autocomplete="new-password" placeholder="Confirm password"><button id="save">Save password</button><p id="message" class="muted"></p></main><script>document.getElementById("save").onclick=async()=>{const p=document.getElementById("password").value;if(p!==document.getElementById("confirm").value){document.getElementById("message").textContent="Passwords do not match.";return}const token=new URLSearchParams(location.search).get("token")||"";const r=await fetch("/auth/complete-token",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,password:p})});const d=await r.json().catch(()=>({}));document.getElementById("message").textContent=r.ok?"Password saved. You can now sign in.":(d.error||"This link is invalid or has expired.")}</script></body></html>`;
+const RESET = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set your password</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111827;border:1px solid #293246}input,button{width:100%;margin-top:12px;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:12px 14px;font:inherit}button{background:#2563eb;font-weight:800}.muted{color:#9da8bc;line-height:1.5}</style></head><body><main class="card"><h1>Set a new password</h1><p class="muted">Use at least 14 characters. This one-time link expires after 20 minutes.</p><input id="password" type="password" autocomplete="new-password" placeholder="New password (14+ characters)"><input id="confirm" type="password" autocomplete="new-password" placeholder="Confirm password"><button id="save">Save password</button><p id="message" class="muted"></p></main><script>${CLIENT_AUTH_JS}document.getElementById("save").onclick=async()=>{const p=document.getElementById("password").value;if(p!==document.getElementById("confirm").value){document.getElementById("message").textContent="Passwords do not match.";return}if(p.length<14||p.length>128){document.getElementById("message").textContent="Choose a password between 14 and 128 characters.";return}const q=new URLSearchParams(location.search),token=q.get("token")||"",email=q.get("email")||"";try{const verifier=await derivePasswordVerifier(email,p);const r=await fetch("/auth/complete-token",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,email,password_verifier:verifier,password_length:p.length})});const d=await r.json().catch(()=>({}));document.getElementById("message").textContent=r.ok?"Password saved. You can now sign in.":(d.error||"This link is invalid or has expired.")}catch(e){document.getElementById("message").textContent="Could not securely prepare the password."}}</script></body></html>`;
 
-const SETUP = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Portal administrator setup</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111827;border:1px solid #293246}input,button{width:100%;margin-top:12px;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:12px 14px;font:inherit}button{background:#2563eb;font-weight:800}.muted{color:#9da8bc;line-height:1.5}</style></head><body><main class="card"><h1>Set up or recover the administrator</h1><p class="muted">Use the private setup key configured by the portal owner and a unique password with at least 14 characters. Once an admin exists, this only changes that same admin account.</p><input id="key" type="password" autocomplete="off" placeholder="Private setup key"><input id="email" type="email" autocomplete="username" placeholder="Administrator email"><input id="password" type="password" autocomplete="new-password" placeholder="New password (14+ characters)"><button id="create">Save administrator password</button><p id="message" class="muted"></p></main><script>document.getElementById("create").onclick=async()=>{const r=await fetch("/auth/bootstrap",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({setup_key:document.getElementById("key").value,email:document.getElementById("email").value,password:document.getElementById("password").value})});const d=await r.json().catch(()=>({}));if(r.ok)location.href="/login";else document.getElementById("message").textContent=d.error||"Setup failed."}</script></body></html>`;
+const SETUP = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Portal administrator setup</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111827;border:1px solid #293246}input,button{width:100%;margin-top:12px;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:12px 14px;font:inherit}button{background:#2563eb;font-weight:800}.muted{color:#9da8bc;line-height:1.5}</style></head><body><main class="card"><h1>Set up or recover the administrator</h1><p class="muted">Use the private setup key configured by the portal owner and a unique password with at least 14 characters. Once an admin exists, this only changes that same admin account.</p><input id="key" type="password" autocomplete="off" placeholder="Private setup key"><input id="email" type="email" autocomplete="username" placeholder="Administrator email"><input id="password" type="password" autocomplete="new-password" placeholder="New password (14+ characters)"><button id="create">Save administrator password</button><p id="message" class="muted"></p></main><script>${CLIENT_AUTH_JS}document.getElementById("create").onclick=async()=>{const key=document.getElementById("key").value,email=document.getElementById("email").value,p=document.getElementById("password").value;if(p.length<14||p.length>128){document.getElementById("message").textContent="Choose a password between 14 and 128 characters.";return}try{const verifier=await derivePasswordVerifier(email,p);const r=await fetch("/auth/bootstrap",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({setup_key:key,email,password_verifier:verifier,password_length:p.length})});const d=await r.json().catch(()=>({}));if(r.ok)location.href="/login";else document.getElementById("message").textContent=d.error||"Setup failed."}catch(e){document.getElementById("message").textContent="Could not securely prepare the password."}}</script></body></html>`;
 
 const PORTAL = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CheatVision Tester Share</title>
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#070a10;color:#eef3ff}header{position:sticky;top:0;z-index:3;background:#090d16ef;backdrop-filter:blur(16px);border-bottom:1px solid #222b3d;padding:14px 20px;display:flex;align-items:center;gap:12px;justify-content:space-between}.brand strong{display:block;font-size:18px}.brand span{color:#8fa1ba;font-size:12px}.wrap{max-width:1180px;margin:auto;padding:22px}.grid{display:grid;grid-template-columns:220px 1fr;gap:18px}.panel{background:#101622;border:1px solid #263044;border-radius:18px;padding:16px}.folders button{display:block;width:100%;text-align:left;margin:4px 0;padding:10px 12px;border:0;border-radius:10px;background:transparent;color:#cbd5e1;cursor:pointer}.folders button.active{background:#1d4ed8;color:#fff}.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}button,input{border-radius:10px;border:1px solid #334057;background:#0a101b;color:#fff;padding:9px 11px;font:inherit}button{cursor:pointer}.primary{background:#2563eb;border-color:#3b82f6;font-weight:750}.danger{background:#7f1d1d;border-color:#b91c1c}.files{width:100%;border-collapse:collapse}.files th,.files td{padding:10px 8px;border-bottom:1px solid #202a3d;text-align:left;font-size:13px}.files th{color:#94a3b8}.files a{color:#7dd3fc;text-decoration:none}.latest{margin-bottom:14px;padding:14px;border:1px solid #245a9c;border-radius:14px;background:#0d2441}.latest a{color:#93c5fd}.muted{color:#8fa1ba}.progress{height:7px;background:#1f2937;border-radius:999px;overflow:hidden;margin-top:8px}.progress i{display:block;height:100%;background:#38bdf8;width:0}.link-box{display:flex;gap:8px;margin-top:12px}.link-box input{flex:1;min-width:0}.hidden{display:none!important}@media(max-width:760px){.grid{grid-template-columns:1fr}.folders{display:flex;overflow:auto;gap:5px}.folders button{white-space:nowrap;width:auto}.files th:nth-child(3),.files td:nth-child(3){display:none}.link-box{flex-direction:column}}</style></head>
@@ -191,17 +191,12 @@ export default { async fetch(request, env) {
       if (!setupSecret) return json({ error: "Administrator setup is not configured yet." }, 503);
       if (!constantEqual(String(body?.setup_key || ""), setupSecret)) return json({ error: "Invalid setup key." }, 403);
       const email = validEmail(body?.email);
-      const password = String(body?.password || "");
+      const verifier = String(body?.password_verifier || "");
+      const passwordLength = Number(body?.password_length || 0);
       if (!email) return json({ error: "Enter a valid email address." }, 400);
-      if (!validPassword(password)) return json({ error: "Choose a password between 14 and 128 characters." }, 400);
+      if (!Number.isInteger(passwordLength) || passwordLength < 14 || passwordLength > 128 || !validVerifier(verifier)) return json({ error: "Choose a password between 14 and 128 characters." }, 400);
 
-      let digest;
-      try {
-        digest = await passwordDigest(password);
-      } catch (error) {
-        console.error("Bootstrap password hashing failed", error?.message || "unknown error");
-        return json({ error: "Administrator password setup failed (bootstrap-crypto)." }, 500);
-      }
+      const digest = await verifierDigest(verifier);
 
       let existingAdmin;
       try {
@@ -241,11 +236,10 @@ export default { async fetch(request, env) {
       let body;
       try { body = await request.json(); } catch { return json({ error: "Invalid request." }, 400); }
       const email = validEmail(body?.email);
-      const password = String(body?.password || "");
+      const verifier = String(body?.password_verifier || "");
       const user = email ? await env.AUTH_DB.prepare("SELECT * FROM users WHERE email=? LIMIT 1").bind(email).first() : null;
-      const dummy = { password_salt: "AAAAAAAAAAAAAAAAAAAAAA", password_hash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", password_iterations: PASSWORD_ITERATIONS };
-      const matches = await passwordMatches(password.slice(0, 128), user?.is_active ? user : dummy);
-      if (!user?.is_active || !matches || password.length > 128) return json({ error: "Email or password is incorrect." }, 401);
+      const matches = user?.is_active ? await verifierMatches(verifier, user) : false;
+      if (!user?.is_active || !matches) return json({ error: "Email or password is incorrect." }, 401);
       const sessionToken = await createSession(env, user);
       return json({ ok: true, role: user.role }, 200, { "set-cookie": sessionCookie(sessionToken) });
     }
@@ -256,18 +250,20 @@ export default { async fetch(request, env) {
       let body;
       try { body = await request.json(); } catch { return json({ error: "Invalid request." }, 400); }
       const token = String(body?.token || "");
-      const password = String(body?.password || "");
+      const email = validEmail(body?.email);
+      const verifier = String(body?.password_verifier || "");
+      const passwordLength = Number(body?.password_length || 0);
       if (token.length < 20 || token.length > 128) return json({ error: "This link is invalid or has expired." }, 400);
-      if (!validPassword(password)) return json({ error: "Choose a password between 14 and 128 characters." }, 400);
+      if (!email || !Number.isInteger(passwordLength) || passwordLength < 14 || passwordLength > 128 || !validVerifier(verifier)) return json({ error: "Choose a password between 14 and 128 characters." }, 400);
       const now = Math.floor(Date.now() / 1000);
       const tokenHash = await sha256Hex(token);
-      const row = await env.AUTH_DB.prepare(`SELECT t.user_id,t.purpose,u.is_active
+      const row = await env.AUTH_DB.prepare(`SELECT t.user_id,t.purpose,u.is_active,u.email
         FROM auth_tokens t JOIN users u ON u.user_id=t.user_id
         WHERE t.token_hash=? AND t.used_at IS NULL AND t.expires_at>?`).bind(tokenHash, now).first();
-      if (!row || (row.purpose === "invite" && row.is_active) || (row.purpose === "reset" && !row.is_active)) {
+      if (!row || row.email.toLowerCase() !== email || (row.purpose === "invite" && row.is_active) || (row.purpose === "reset" && !row.is_active)) {
         return json({ error: "This link is invalid or has expired." }, 400);
       }
-      const digest = await passwordDigest(password);
+      const digest = await verifierDigest(verifier);
       const nonce = randomToken(16);
       const results = await env.AUTH_DB.batch([
         env.AUTH_DB.prepare(`UPDATE auth_tokens SET used_at=?,consumed_nonce=?
@@ -326,7 +322,7 @@ export default { async fetch(request, env) {
       } catch {
         return json({ error: "Could not create this account. Check whether the email is already in use." }, 409);
       }
-      return json({ ok: true, email, url: `${PORTAL_ORIGIN}/reset?token=${encodeURIComponent(raw)}` });
+      return json({ ok: true, email, url: `${PORTAL_ORIGIN}/reset?token=${encodeURIComponent(raw)}&email=${encodeURIComponent(email)}` });
     }
     if (request.method === "POST" && url.pathname === "/api/users/reset-link") {
       if (session.role !== "admin") return json({ error: "Admin access required." }, 403);
