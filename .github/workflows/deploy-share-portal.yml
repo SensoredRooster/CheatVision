@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/deploy-share-portal.yml"
+      - "cloudflare/share-worker/**"
 
 jobs:
   deploy:
