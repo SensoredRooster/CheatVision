@@ -1526,7 +1526,8 @@ def _list_directshow_video_names() -> list[str]:
     for line in output.splitlines():
         if '"' not in line:
             continue
-        if "(video)" not in line and "(audio, video)" not in line:
+        capabilities = re.findall(r"\(([^()]*)\)", line)
+        if not any("video" in {part.strip().lower() for part in capability.split(",")} for capability in capabilities):
             continue
         parts = line.split('"')
         if len(parts) < 2:
