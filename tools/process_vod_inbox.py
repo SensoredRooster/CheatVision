@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,10 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
 DEFAULT_KILL_FEED_ROI = (0.0, 0.43, 0.24, 0.60)
 DEFAULT_ELIMINATION_ROI = (0.55, 0.42, 0.82, 0.57)
 DEFAULT_PLAYER_HUD_ROI = (0.0, 0.89, 0.20, 0.98)
+SHORT_CLIP_SECONDS = 20.0
+PLAYER_TAG_FILENAME = "player_tag.txt"
+PLAYER_TAGS_FILENAME = "player_tags.json"
+PLAYER_TAG_HISTORY_LIMIT = 50
 
 
 @dataclass(frozen=True)
@@ -162,6 +167,77 @@ def find_elimination_toasts(items: Iterable[OcrText]) -> list[str]:
         if is_elimination or "killconfirmed" in normalized:
             matches.append(row_text)
     return matches
+
+
+def player_tag_path(inbox: Path) -> Path:
+    return inbox / PLAYER_TAG_FILENAME
+
+
+def player_tags_path(inbox: Path) -> Path:
+    return inbox / PLAYER_TAGS_FILENAME
+
+
+def load_player_tag_history(inbox: Path) -> list[str]:
+    json_path = player_tags_path(inbox)
+    if json_path.is_file():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            last = str(payload.get("last") or "").strip()
+            history = payload.get("history") or []
+            names = [str(item).strip() for item in history if str(item).strip()]
+            if last:
+                names = [last] + [name for name in names if name.casefold() != last.casefold()]
+            return names
+        if isinstance(payload, list):
+            return [str(item).strip() for item in payload if str(item).strip()]
+    legacy = player_tag_path(inbox)
+    if legacy.is_file():
+        tag = legacy.read_text(encoding="utf-8").strip()
+        if tag:
+            return [tag]
+    return []
+
+
+def load_player_tag(inbox: Path) -> str:
+    history = load_player_tag_history(inbox)
+    return history[0] if history else ""
+
+
+def save_player_tag(inbox: Path, tag: str) -> None:
+    cleaned = tag.strip()
+    if not cleaned:
+        return
+    inbox.mkdir(parents=True, exist_ok=True)
+    history = [cleaned] + [
+        name for name in load_player_tag_history(inbox) if name.casefold() != cleaned.casefold()
+    ]
+    history = history[:PLAYER_TAG_HISTORY_LIMIT]
+    player_tags_path(inbox).write_text(
+        json.dumps({"last": cleaned, "history": history}, indent=2),
+        encoding="utf-8",
+    )
+    player_tag_path(inbox).write_text(cleaned + "\n", encoding="utf-8")
+
+
+def probe_video(path: Path) -> tuple[float, float]:
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open VOD: {path}")
+    try:
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    finally:
+        capture.release()
+    if fps <= 0 or frame_count <= 0:
+        raise RuntimeError(f"VOD has no usable frame-rate or duration metadata: {path}")
+    return fps, frame_count / fps
+
+
+def is_short_clip(duration_seconds: float, before: float, after: float) -> bool:
+    return duration_seconds <= max(SHORT_CLIP_SECONDS, before + after)
 
 
 def parse_roi(value: str) -> tuple[float, float, float, float]:
@@ -400,32 +476,54 @@ def process_vod(
 ) -> list[Path]:
     if label not in {"clean", "suspicious"}:
         raise ValueError(f"Unsupported dataset label: {label}")
-    if not player_tag.strip():
+
+    fps, duration = probe_video(vod_path)
+    short = is_short_clip(duration, args.before, args.after)
+    tag = player_tag.strip()
+    if not tag and not short:
         raise ValueError("The gamer tag cannot be empty.")
 
-    engine = ocr if ocr is not None else create_ocr_engine()
-    print(f"[SCAN] {vod_path.name} | {label} | player={player_tag}")
-    fps, events = scan_vod(
-        vod_path,
-        player_tag,
-        engine,
-        args.sample_seconds,
-        args.roi,
-        args.min_confidence,
-        args.match_threshold,
-        args.elimination_roi,
-        args.player_hud_roi,
-    )
-    print(f"[SCAN] Found {len(events)} player kill moments.")
+    events: list[KillEvent] = []
+    if tag:
+        engine = ocr if ocr is not None else create_ocr_engine()
+        print(f"[SCAN] {vod_path.name} | {label} | player={tag} | {duration:.1f}s")
+        try:
+            fps, events = scan_vod(
+                vod_path,
+                tag,
+                engine,
+                args.sample_seconds,
+                args.roi,
+                args.min_confidence,
+                args.match_threshold,
+                args.elimination_roi,
+                args.player_hud_roi,
+            )
+        except RuntimeError:
+            if not short:
+                raise
+            print(f"[SCAN] Could not verify HUD tag on short clip {vod_path.name}; using the whole file.")
+        else:
+            print(f"[SCAN] Found {len(events)} player kill moments.")
+    else:
+        print(f"[SCAN] {vod_path.name} | {label} | short clip, no tag; using the whole file.")
+
     if not events:
-        print(f"[WARN] No kill moments found for {vod_path.name}.")
-        return []
+        if not short:
+            print(f"[WARN] No kill moments found for {vod_path.name}.")
+            return []
+        events = [KillEvent(timestamp=0.0, row_text="whole-clip")]
 
     clips: list[Path] = []
     for index, event in enumerate(events, start=1):
-        start = max(0.0, event.timestamp - args.before)
-        end = event.timestamp + args.after
-        destination = args.dataset / label / _output_name(vod_path, event)
+        if event.row_text == "whole-clip":
+            start = 0.0
+            end = duration
+            destination = args.dataset / label / f"{vod_path.stem}_full.mp4"
+        else:
+            start = max(0.0, event.timestamp - args.before)
+            end = min(duration, event.timestamp + args.after)
+            destination = args.dataset / label / _output_name(vod_path, event)
         write_clip(vod_path, destination, start, end, fps)
         clips.append(destination)
         print(f"  [{index}/{len(events)}] {start:.1f}-{end:.1f}s -> {destination}")
@@ -470,11 +568,15 @@ def process_inbox(args: argparse.Namespace) -> int:
         return 1
 
     clip_count = 0
+    player_tag = load_player_tag(args.inbox)
     for label, vod_path in vods:
-        player_tag = input(f"Enter the watched player's exact gamer tag for {vod_path.name}: ").strip()
-        if not player_tag:
-            print(f"[ERROR] No gamer tag entered for {vod_path.name}; stopping.")
-            return 1
+        hint = f" [{player_tag}]" if player_tag else ""
+        entered = input(
+            f"Player tag for {vod_path.name}{hint} (Enter to keep, or type a new name): "
+        ).strip()
+        if entered:
+            player_tag = entered
+            save_player_tag(args.inbox, player_tag)
         clip_count += len(process_vod(vod_path, label, player_tag, args))
 
     if clip_count == 0:

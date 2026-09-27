@@ -538,41 +538,34 @@ Make sure `ffmpeg` is installed and available on PATH.
 
 #### Tester folder workflow
 
-1. Start `watch_vod_inbox.bat` and leave its small watcher window open.
-2. Drop a video into `data/vod_inbox/clean/` for verified-clean footage or
-   `data/vod_inbox/cheating/` for footage where the kills being submitted are
-   confirmed cheating. These folders are created automatically. Do not mix
-   unverified or differently labeled footage in either video.
-3. After the copy finishes, a popup asks for the watched player's exact
-   in-game gamer tag. The scanner verifies that name in the persistent
-   bottom-left player HUD, then looks for the tag as killer in the middle-left
-   kill feed. A mid-right elimination toast is a fallback after identity
-   verification.
-4. The window reports created clips, training status, or a visible error.
+1. Start `watch_vod_inbox.bat` and leave its window open.
+2. Type the watched player's tag **once** in that window. It is saved and reused.
+   Keep original filenames; do not rename clips to retry.
+3. Drop a video into `data/vod_inbox/clean/` for verified-clean footage or
+   misfires, or `data/vod_inbox/cheating/` for footage where the kills being
+   submitted are confirmed cheating. These folders are created automatically.
+   Do not mix unverified or differently labeled footage in either folder.
+4. For long VODs the scanner verifies the tag in the bottom-left HUD, then looks
+   for that player as killer in the middle-left kill feed. A mid-right
+   elimination toast is a fallback after identity verification.
+5. The window reports created clips, training status, or a visible error.
    Inputs stay in the inbox; extracted clips are added to
    `data/vod_dataset/clean/` or `data/vod_dataset/suspicious/`.
 
-The watcher ignores videos already present when it starts and waits for a new
-video's file size/time to stop changing before asking about it. It handles one
-video at a time. If the tag prompt is cancelled, copy the video back with a new
-filename to retry. Keep the watcher open while the tester is adding footage.
-The command-line batch alternative, `tools/process_vod_inbox.py`, also prompts
-for a tag in its console; no `.player.txt` sidecar is required.
+The watcher processes videos already in the folders and waits for a new file's
+size/time to stop changing before reading it. It handles one video at a time.
+Keep the watcher open while footage is being added. The command-line batch
+alternative, `tools/process_vod_inbox.py`, asks for the tag once and reuses it.
 
 #### Long VODs and short clips
 
-Long recordings and already-trimmed short clips use the same OCR scan. The
-scanner samples the whole input, verifies the watched-player HUD, and extracts
-context around distinct kill-feed moments. A short clip is bounded naturally
-by its available footage; it is not required to contain a full 10 seconds
-before or 4 seconds after a kill. The default context for longer footage is
-10 seconds before and 4 seconds after each detected kill.
+Long recordings are OCR-scanned. The default context is 10 seconds before and
+4 seconds after each detected kill.
 
-If a short clip no longer shows the kill feed or elimination toast, the scanner
-will report no event and create no training clip; the original remains in the
-inbox for review. This avoids labeling unrelated footage as a kill. The tag
-must still be visible in the bottom-left HUD. Supported formats are MP4, AVI,
-MKV, and MOV.
+Already-cut short clips and misfires (about 20 seconds or less) are copied into
+the labeled dataset **as-is**. They do not need a kill feed, elimination toast,
+or gamer tag. That is the path for incident misfires dropped into `clean`.
+Supported formats are MP4, AVI, MKV, and MOV.
 
 Output clips are H.264-compressed, scaled to at most 960x540, and capped at
 60 fps. After a new video creates clips, the watcher attempts to train an

@@ -17,10 +17,14 @@ from tools.process_vod_inbox import (
     _ocr_texts,
     find_elimination_toasts,
     find_player_kill_rows,
+    is_short_clip,
+    load_player_tag,
+    load_player_tag_history,
     normalize_name,
     parse_roi,
     player_tag_is_visible,
     process_vod,
+    save_player_tag,
     scan_vod,
     train_candidate,
     write_clip,
@@ -153,20 +157,76 @@ class ProcessVodTests(unittest.TestCase):
             event = KillEvent(timestamp=2.0, row_text="Tester1234 Enemy5678")
             expected = dataset / "suspicious" / "short_t000002000ms.mp4"
 
-            with patch("tools.process_vod_inbox.scan_vod", return_value=(60.0, [event])), patch(
-                "tools.process_vod_inbox.write_clip"
-            ) as write_clip_mock:
+            with patch("tools.process_vod_inbox.probe_video", return_value=(60.0, 8.0)), patch(
+                "tools.process_vod_inbox.scan_vod", return_value=(60.0, [event])
+            ), patch("tools.process_vod_inbox.write_clip") as write_clip_mock:
                 clips = process_vod(vod, "suspicious", "Tester1234", args, ocr=object())
 
         self.assertEqual(clips, [expected])
         write_clip_mock.assert_called_once_with(vod, expected, 0.0, 6.0, 60.0)
 
-    def test_refuses_empty_gamer_tag(self) -> None:
+    def test_short_clip_without_kills_is_copied_whole(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            args = argparse.Namespace()
+            vod = Path(directory) / "misfire_sticky.mp4"
+            dataset = Path(directory) / "dataset"
+            args = argparse.Namespace(
+                dataset=dataset,
+                sample_seconds=0.25,
+                roi=(0, 0, 1, 1),
+                min_confidence=0.6,
+                match_threshold=0.9,
+                elimination_roi=(0, 0, 1, 1),
+                player_hud_roi=(0, 0, 1, 1),
+                before=10.0,
+                after=4.0,
+            )
+            expected = dataset / "clean" / "misfire_sticky_full.mp4"
 
-            with self.assertRaisesRegex(ValueError, "gamer tag cannot be empty"):
-                process_vod(Path(directory) / "input.mp4", "clean", " ", args, ocr=object())
+            with patch("tools.process_vod_inbox.probe_video", return_value=(60.0, 5.0)), patch(
+                "tools.process_vod_inbox.scan_vod", return_value=(60.0, [])
+            ), patch("tools.process_vod_inbox.write_clip") as write_clip_mock:
+                clips = process_vod(vod, "clean", "Tester1234", args, ocr=object())
+
+        self.assertEqual(clips, [expected])
+        write_clip_mock.assert_called_once_with(vod, expected, 0.0, 5.0, 60.0)
+
+    def test_short_clip_does_not_need_a_gamer_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            vod = Path(directory) / "misfire.mp4"
+            dataset = Path(directory) / "dataset"
+            args = argparse.Namespace(dataset=dataset, before=10.0, after=4.0)
+            expected = dataset / "clean" / "misfire_full.mp4"
+
+            with patch("tools.process_vod_inbox.probe_video", return_value=(30.0, 4.0)), patch(
+                "tools.process_vod_inbox.write_clip"
+            ) as write_clip_mock:
+                clips = process_vod(vod, "clean", " ", args, ocr=object())
+
+        self.assertEqual(clips, [expected])
+        write_clip_mock.assert_called_once_with(vod, expected, 0.0, 4.0, 30.0)
+
+    def test_long_vod_still_requires_a_gamer_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(before=10.0, after=4.0)
+
+            with patch("tools.process_vod_inbox.probe_video", return_value=(60.0, 180.0)):
+                with self.assertRaisesRegex(ValueError, "gamer tag cannot be empty"):
+                    process_vod(Path(directory) / "input.mp4", "clean", " ", args, ocr=object())
+
+    def test_saves_player_tag_once_for_later_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = Path(directory)
+
+            save_player_tag(inbox, " [TwTcH]SensoredRooster ")
+            save_player_tag(inbox, "OtherPlayer")
+
+            self.assertEqual(load_player_tag(inbox), "OtherPlayer")
+            self.assertEqual(
+                load_player_tag_history(inbox),
+                ["OtherPlayer", "[TwTcH]SensoredRooster"],
+            )
+            self.assertTrue(is_short_clip(5.0, 10.0, 4.0))
+            self.assertFalse(is_short_clip(180.0, 10.0, 4.0))
 
     def test_candidate_training_waits_until_both_classes_exist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
