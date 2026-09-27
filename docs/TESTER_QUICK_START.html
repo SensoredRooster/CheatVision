@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CheatVision VOD Tester — How-To</title>
+  <style>
+    @page { size: letter; margin: 0.42in; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", Calibri, Arial, sans-serif;
+      font-size: 10.6pt;
+      line-height: 1.32;
+      color: #1E2327;
+      background: #fff;
+      width: 7.66in;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 3px solid #CB2B30;
+      padding: 0 0 8px;
+      margin: 0 0 10px;
+    }
+    header img { width: 42px; height: 42px; }
+    .lockup { flex: 1; }
+    .lockup h1 { margin: 0; font-size: 16.5pt; letter-spacing: 1.4px; font-weight: 700; }
+    .lockup h1 span { color: #CB2B30; }
+    .lockup p { margin: 1px 0 0; font-size: 8.4pt; letter-spacing: 1.6px; text-transform: uppercase; color: #5b636b; }
+    .badge { border: 1px solid #CB2B30; color: #CB2B30; font-size: 8pt; letter-spacing: 0.8px; text-transform: uppercase; padding: 4px 8px; white-space: nowrap; }
+    .goal { background: #f6f3f3; border-left: 4px solid #CB2B30; padding: 7px 10px; margin: 0 0 10px; font-size: 10pt; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 8px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 0 0 8px; }
+    .card { border: 1px solid #d5d8dc; padding: 8px 10px 9px; }
+    .card h2 { margin: 0 0 6px; font-size: 9.4pt; letter-spacing: 0.9px; text-transform: uppercase; color: #CB2B30; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    ol, ul { margin: 0; padding-left: 16px; }
+    li { margin: 0 0 3px; }
+    table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+    th, td { border: 1px solid #d5d8dc; padding: 5px 7px; text-align: left; vertical-align: top; }
+    th { background: #1E2327; color: #fff; font-weight: 600; font-size: 8.4pt; letter-spacing: 0.6px; text-transform: uppercase; }
+    code { font-family: Consolas, "Courier New", monospace; font-size: 8.8pt; background: #f1f2f4; padding: 0 3px; }
+    .kicker { font-weight: 700; }
+    .warn { color: #CB2B30; font-weight: 700; }
+    footer { margin-top: 8px; border-top: 2px solid #1E2327; padding-top: 7px; }
+    footer h2 { margin: 0 0 5px; font-size: 9.4pt; letter-spacing: 0.9px; text-transform: uppercase; color: #1E2327; }
+    .tips { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .tips div { background: #f6f7f8; padding: 6px 8px; }
+    .tips strong { display: block; font-size: 8.4pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="../assets/brand/cheatvision_mark.png" alt="CheatVision">
+    <div class="lockup">
+      <h1>CHEAT<span>VISION</span> · VOD TESTER</h1>
+      <p>How-to · Warzone · Long VODs and short clips</p>
+    </div>
+    <div class="badge">Offline helper · live pipeline unchanged</div>
+  </header>
+
+  <div class="goal">
+    <strong>Goal:</strong> Drop a labeled video, type the watched player’s tag, and let CheatVision cut reviewable kill clips.
+    This does <span class="warn">not</span> change live detection or the main model.
+  </div>
+
+  <section class="card" style="margin-bottom:8px;">
+    <h2>1 · Start, then drop</h2>
+    <ol>
+      <li>Double-click <code>watch_vod_inbox.bat</code> and leave it open.</li>
+      <li>Start the watcher <strong>before</strong> copying videos. It only notices <em>new</em> files.</li>
+      <li>When the copy finishes, enter the watched player’s exact in-game tag in the popup.</li>
+      <li>The original video stays in the inbox. Review extracted clips before sharing.</li>
+    </ol>
+  </section>
+
+  <section class="card" style="margin-bottom:8px;">
+    <h2>2 · Where the video goes = the label</h2>
+    <table>
+      <tr>
+        <th>Drop the video here</th>
+        <th>Use when</th>
+        <th>Clips are saved as</th>
+      </tr>
+      <tr>
+        <td><code>data\vod_inbox\clean\</code></td>
+        <td>You have verified the footage is clean.</td>
+        <td><code>data\vod_dataset\clean\</code></td>
+      </tr>
+      <tr>
+        <td><code>data\vod_inbox\cheating\</code></td>
+        <td>You have confirmed the kills are cheating.</td>
+        <td><code>data\vod_dataset\suspicious\</code></td>
+      </tr>
+    </table>
+    <p style="margin:6px 0 0;">Do not mix unverified footage. Folder choice is the label. <strong>What it reads:</strong> bottom-left HUD (player) → middle-left kill feed (that player as killer) → mid-right elimination toast (fallback).</p>
+  </section>
+
+  <div class="grid-3">
+    <section class="card">
+      <h2>Long VOD</h2>
+      <p>Scans the whole recording. Default clip is <strong>10 sec before</strong> and <strong>4 sec after</strong> each distinct kill.</p>
+      <p>Best for 5+ minute matches. One file can produce several clips.</p>
+    </section>
+    <section class="card">
+      <h2>Short clip</h2>
+      <p>Same scan. Uses whatever footage is in the file if a full 14-second window is not available.</p>
+      <p>If the kill feed / toast is already gone, <span class="warn">no clip is created</span>. The original stays in the inbox.</p>
+    </section>
+    <section class="card">
+      <h2>Train and send</h2>
+      <p>Trains an offline candidate only if both clean and suspicious clips exist. Path: <code>data\models\candidates\</code>. <span class="warn">Not</span> loaded live.</p>
+      <p>Spot-check clips, then send <code>data\vod_dataset\</code>. Do not commit videos to Git.</p>
+    </section>
+  </div>
+
+  <footer>
+    <h2>Troubleshooting</h2>
+    <div class="tips">
+      <div><strong>No popup?</strong> Watcher must be open first. Copy a <em>new</em> file into <code>clean</code> or <code>cheating</code>. Cancelled prompt: copy again with a new filename.</div>
+      <div><strong>No clips?</strong> Check tag spelling. Bottom-left name and a kill indicator must be visible. Short highlight clips often need the feed still on screen.</div>
+      <div><strong>Still processing?</strong> Keep the watcher open until the current video finishes.</div>
+    </div>
+  </footer>
+</body>
+</html>

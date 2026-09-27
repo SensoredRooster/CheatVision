@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
-    echo CheatVision is not set up yet. Run setup.bat first.
+    echo CheatVision is not set up yet. Double-click setup.bat first.
     pause
     exit /b 1
 )

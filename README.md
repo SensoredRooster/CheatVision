@@ -29,7 +29,7 @@ Repo: https://github.com/SensoredRooster/CheatVision
 
 
 1. Install **Python 3.11 or newer** from https://www.python.org/downloads/ and tick **"Add python.exe to PATH"** in the installer.
-2. Download this repo (green **Code** button → **Download ZIP**, unzip it; or `git clone`). Open the folder and double-click **`setup.bat`**. It builds the app's private Python environment, installs its packages, installs ffmpeg if it is missing, asks whether to fetch the player detector (say Y), and finishes with a checklist that says exactly what is still missing, if anything.
+2. Download this repo (green **Code** button → **Download ZIP**, unzip it; or `git clone`). Open the folder and double-click **`setup.bat`**. It builds the app's private Python environment, installs app packages plus VOD OCR and training extras, installs ffmpeg if it is missing, asks whether to fetch the player detector (say Y), and finishes with a checklist that says exactly what is still missing, if anything. Later GitHub updates: double-click **`update.bat`** (needs a git clone).
 3. Double-click **`run.bat`**. The app opens on the CheatVision mark and connects to your capture card.
 
 If something is off later, run the checker from the repo folder: `.venv\Scripts\python.exe tools\setup_check.py`. Every line is `[OK]`, `[!!]` (required, with the fix) or `[--]` (optional).
@@ -67,7 +67,7 @@ A clone or ZIP is **source code only**. These are deliberately not in git, and
 
 ## 1. Install (one time)
 
-**Easy way:** double-click **`setup.bat`** in the repo folder and follow the prompts. That is all.
+**Easy way:** double-click **`setup.bat`** in the repo folder and follow the prompts. That is all. Later, double-click **`update.bat`** to pull `main` and refresh packages.
 
 **Manual way** (PowerShell in the repo folder), which is exactly what `setup.bat` does:
 
@@ -75,13 +75,18 @@ A clone or ZIP is **source code only**. These are deliberately not in git, and
 python -m venv .venv                       # the app's private Python environment
 .\.venv\Scripts\Activate.ps1               # use it in this terminal
 pip install -r requirements.txt            # what the app needs to run
+pip install -r requirements-train.txt      # detector export + offline VOD training
+pip install --no-deps -r requirements-vod-ocr.txt  # Warzone VOD clipper OCR
 winget install -e --id Gyan.FFmpeg         # if `ffmpeg -version` says it is missing; then open a new terminal
 python tools/setup_check.py --get-model    # fetch the player detector (~300 MB once) and print the checklist
 ```
 
 `requirements.txt` is only what the app needs to run. `requirements-train.txt`
-(torch, ultralytics) is only for fetching the player detector and for
-retraining; the checker installs it when you ask for the model.
+(torch, ultralytics) is for fetching the player detector and for offline
+retraining. `requirements-vod-ocr.txt` is for the Warzone inbox clipper; install
+it with `--no-deps` so it does not replace the app ONNX Runtime. `setup.bat`
+installs all three. `update.bat` pulls `origin/main` and refreshes those same
+packages.
 
 ### The checker
 
@@ -512,31 +517,24 @@ labelled cheat footage — if you have some, this is the tool to run it through.
 
 The VOD inbox is an **offline** clip-and-training helper. It does not change,
 replace, or feed the live CheatVision detection pipeline. The easiest option
-for testers is to double-click `watch_vod_inbox.bat`; detailed, printable steps
-are in [docs/TESTER_QUICK_START.md](docs/TESTER_QUICK_START.md).
+for testers is to double-click `watch_vod_inbox.bat`. Two printable sheets:
 
-#### Install once
+- How-to (drop videos, clip kills): [docs/TESTER_QUICK_START.pdf](docs/TESTER_QUICK_START.pdf)
+- Install and GitHub updates: [docs/TESTER_SETUP.pdf](docs/TESTER_SETUP.pdf)
 
-In PowerShell opened in the repository folder:
+#### Install and update
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install --no-deps -r requirements-vod-ocr.txt
-```
+First time: double-click **`setup.bat`**. Later GitHub updates: double-click
+**`update.bat`**. `update.bat` pulls `origin/main` when this folder is a git
+clone, then refreshes app packages, training extras, and VOD OCR (`--no-deps`
+so the app ONNX Runtime / DirectML stays put). Inbox videos and extracted clips
+are gitignored and are left on the tester PC. ZIP downloads cannot pull; clone
+the repo for automatic updates.
 
-When training is wanted, also install the training packages:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-train.txt
-```
-
-Use `--no-deps` for the OCR requirements: this prevents OCR setup from
-replacing the app's CPU or DirectML ONNX Runtime. The OCR dependencies needed
-without changing that runtime are listed in `requirements-vod-ocr.txt`.
-Run `tools/setup_check.py` after installing optional training packages. If the
-player detector changes from GPU/DirectML to CPU, restore DirectML with
-`.venv\Scripts\python.exe -m pip uninstall -y onnxruntime` followed by
-`.venv\Scripts\python.exe -m pip install onnxruntime-directml`. Make sure
-`ffmpeg` is installed and available on PATH.
+If the player detector later switches from GPU/DirectML to CPU, restore
+DirectML with `.venv\Scripts\python.exe -m pip uninstall -y onnxruntime`
+followed by `.venv\Scripts\python.exe -m pip install onnxruntime-directml`.
+Make sure `ffmpeg` is installed and available on PATH.
 
 #### Tester folder workflow
 
@@ -824,7 +822,7 @@ the trailer is written in the background; the app waits ≤ 10 s on exit.
 | path | role |
 |---|---|
 | `main.py` | entry |
-| `setup.bat` / `run.bat` | one-click install (venv, packages, ffmpeg, optional detector, checker) / one-click start |
+| `setup.bat` / `update.bat` / `run.bat` | first-time install (venv, app + OCR + training packages, ffmpeg, optional detector, checker) / later git pull main + package refresh / one-click start |
 | `requirements.txt` / `requirements-train.txt` | what the app needs to run / extras for fetching the detector and retraining |
 | `src/app.py` | Qt bootstrap, OpenCV thread cap, crash log |
 | `src/core/frame_source.py` | dshow/ffmpeg/MSS, AUTO ladder, virtual cameras, freeze, graceful ffmpeg lifecycle + job object |

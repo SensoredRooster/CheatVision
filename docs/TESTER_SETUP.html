@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CheatVision Tester Setup — Install and Update</title>
+  <style>
+    @page { size: letter; margin: 0.42in; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", Calibri, Arial, sans-serif;
+      font-size: 10.6pt;
+      line-height: 1.32;
+      color: #1E2327;
+      background: #fff;
+      width: 7.66in;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 3px solid #CB2B30;
+      padding: 0 0 8px;
+      margin: 0 0 10px;
+    }
+    header img { width: 42px; height: 42px; }
+    .lockup { flex: 1; }
+    .lockup h1 { margin: 0; font-size: 16.5pt; letter-spacing: 1.4px; font-weight: 700; }
+    .lockup h1 span { color: #CB2B30; }
+    .lockup p { margin: 1px 0 0; font-size: 8.4pt; letter-spacing: 1.6px; text-transform: uppercase; color: #5b636b; }
+    .badge { border: 1px solid #CB2B30; color: #CB2B30; font-size: 8pt; letter-spacing: 0.8px; text-transform: uppercase; padding: 4px 8px; white-space: nowrap; }
+    .goal { background: #f6f3f3; border-left: 4px solid #CB2B30; padding: 7px 10px; margin: 0 0 10px; font-size: 10pt; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 8px; }
+    .card { border: 1px solid #d5d8dc; padding: 8px 10px 9px; }
+    .card h2 { margin: 0 0 6px; font-size: 9.4pt; letter-spacing: 0.9px; text-transform: uppercase; color: #CB2B30; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    ol, ul { margin: 0; padding-left: 16px; }
+    li { margin: 0 0 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+    th, td { border: 1px solid #d5d8dc; padding: 5px 7px; text-align: left; vertical-align: top; }
+    th { background: #1E2327; color: #fff; font-weight: 600; font-size: 8.4pt; letter-spacing: 0.6px; text-transform: uppercase; }
+    code { font-family: Consolas, "Courier New", monospace; font-size: 8.8pt; background: #f1f2f4; padding: 0 3px; }
+    .warn { color: #CB2B30; font-weight: 700; }
+    footer { margin-top: 8px; border-top: 2px solid #1E2327; padding-top: 7px; }
+    footer h2 { margin: 0 0 5px; font-size: 9.4pt; letter-spacing: 0.9px; text-transform: uppercase; color: #1E2327; }
+    .tips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .tips div { background: #f6f7f8; padding: 6px 8px; }
+    .tips strong { display: block; font-size: 8.4pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="../assets/brand/cheatvision_mark.png" alt="CheatVision">
+    <div class="lockup">
+      <h1>CHEAT<span>VISION</span> · TESTER SETUP</h1>
+      <p>Install once · Update from GitHub · Separate from the VOD how-to</p>
+    </div>
+    <div class="badge">setup.bat · update.bat</div>
+  </header>
+
+  <div class="goal">
+    <strong>This sheet is install and update only.</strong> Drop-and-clip steps are on the VOD tester how-to.
+    Inbox videos and extracted clips are <span class="warn">not</span> in git and stay on your PC.
+  </div>
+
+  <div class="grid-2">
+    <section class="card">
+      <h2>1 · First time — setup.bat</h2>
+      <ol>
+        <li>Install Python 3.11+ from python.org and tick <strong>Add python.exe to PATH</strong>.</li>
+        <li>Clone the repo (needed later for updates):
+          <br><code>git clone https://github.com/SensoredRooster/CheatVision.git</code></li>
+        <li>Open the CheatVision folder and double-click <code>setup.bat</code>.</li>
+        <li>Answer the GPU and player-detector prompts. <strong>Y</strong> is the usual choice.</li>
+      </ol>
+      <p><code>setup.bat</code> creates <code>.venv</code> and installs the app, training extras, VOD OCR, ffmpeg if missing, and the optional player detector. You do not run pip yourself.</p>
+      <p>A ZIP works once. <code>update.bat</code> can pull GitHub changes only from a <strong>git clone</strong>.</p>
+    </section>
+    <section class="card">
+      <h2>2 · Later — update.bat</h2>
+      <ol>
+        <li>Double-click <code>update.bat</code> whenever you want the latest from GitHub.</li>
+        <li>It fast-forwards to <code>origin/main</code>.</li>
+        <li>It refreshes app packages, training extras, and VOD OCR.</li>
+        <li>Inbox videos and extracted clips are left untouched.</li>
+      </ol>
+      <p>If the pull fails, local file changes may be in the way. Do not delete your clips. Tell the project owner.</p>
+    </section>
+  </div>
+
+  <section class="card" style="margin-bottom:8px;">
+    <h2>3 · After setup or update</h2>
+    <table>
+      <tr>
+        <th>Start</th>
+        <th>File</th>
+      </tr>
+      <tr>
+        <td>Live CheatVision app</td>
+        <td><code>run.bat</code></td>
+      </tr>
+      <tr>
+        <td>VOD kill-clip watcher</td>
+        <td><code>watch_vod_inbox.bat</code></td>
+      </tr>
+    </table>
+    <p style="margin:6px 0 0;">If something looks missing, run <code>.venv\Scripts\python.exe tools\setup_check.py</code>.</p>
+  </section>
+
+  <footer>
+    <h2>Troubleshooting</h2>
+    <div class="tips">
+      <div><strong>Python not found?</strong> Reinstall Python, tick Add to PATH, then run <code>setup.bat</code> again.</div>
+      <div><strong>Not a git clone?</strong> Clone the repo. ZIP folders cannot use <code>update.bat</code>.</div>
+      <div><strong>Pull failed?</strong> Do not reset. Contact the project owner. Your clips were not deleted.</div>
+      <div><strong>ffmpeg missing?</strong> Close this window, open a new one, then run <code>ffmpeg -version</code>.</div>
+    </div>
+  </footer>
+</body>
+</html>

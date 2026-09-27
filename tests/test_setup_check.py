@@ -65,7 +65,25 @@ class RequirementsSplitTests(unittest.TestCase):
 
     def test_setup_scripts_exist(self) -> None:
         self.assertTrue((ROOT / "setup.bat").is_file())
+        self.assertTrue((ROOT / "update.bat").is_file())
         self.assertTrue((ROOT / "run.bat").is_file())
+
+    def test_setup_bat_installs_vod_extras_without_git_pull(self) -> None:
+        text = (ROOT / "setup.bat").read_text(encoding="utf-8")
+        self.assertNotIn("git pull", text)
+        self.assertIn("requirements.txt", text)
+        self.assertIn("requirements-train.txt", text)
+        self.assertIn("requirements-vod-ocr.txt", text)
+        self.assertIn("--no-deps", text)
+        self.assertIn("update.bat", text)
+
+    def test_update_bat_pulls_main_and_refreshes_vod_extras(self) -> None:
+        text = (ROOT / "update.bat").read_text(encoding="utf-8")
+        self.assertIn("git pull --ff-only origin main", text)
+        self.assertIn("requirements.txt", text)
+        self.assertIn("requirements-train.txt", text)
+        self.assertIn("requirements-vod-ocr.txt", text)
+        self.assertIn("--no-deps", text)
 
 
 if __name__ == "__main__":

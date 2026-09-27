@@ -1,70 +1,43 @@
-# CheatVision VOD Tester Quick Start
+# CHEATVISION | VOD TESTER
+### One-page how-to · Warzone · Printable sheet: [TESTER_QUICK_START.pdf](TESTER_QUICK_START.pdf)
 
-## One-time setup
+> **Goal:** Drop a labeled video, type the watched player’s tag, get kill clips. Offline helper — **does not** change live detection.
 
-1. Get the CheatVision project folder from the project owner and run `setup.bat`.
-2. Open PowerShell in that folder. Install OCR support:
+Install and GitHub updates are on the other sheet: [TESTER_SETUP.md](TESTER_SETUP.md) / [TESTER_SETUP.pdf](TESTER_SETUP.pdf).
 
-   ```powershell
-   .\.venv\Scripts\python.exe -m pip install --no-deps -r requirements-vod-ocr.txt
-   ```
+---
 
-3. To let the tool train an offline candidate after processing, install training
-   packages too:
+## 1 · Start, then drop
 
-   ```powershell
-   .\.venv\Scripts\python.exe -m pip install -r requirements-train.txt
-   ```
+Double-click **`watch_vod_inbox.bat`** and leave it open **before** copying files (it only sees new videos). When the copy finishes, enter the watched player’s exact in-game tag in the popup.
 
-   The OCR install intentionally uses `--no-deps` to preserve CheatVision's
-   ONNX Runtime/DirectML installation. Run
-   `.venv\Scripts\python.exe tools\setup_check.py` after training-package
-   installation. If the detector is reported as CPU-only but should use
-   DirectML, restore it with
-   `.venv\Scripts\python.exe -m pip uninstall -y onnxruntime` and then
-   `.venv\Scripts\python.exe -m pip install onnxruntime-directml`. The normal
-   app requires `ffmpeg` on PATH.
+| Drop video here | When | Clips saved as |
+|---|---|---|
+| `data\vod_inbox\clean\` | Verified-clean footage only | `data\vod_dataset\clean\` |
+| `data\vod_inbox\cheating\` | Confirmed-cheating kills only | `data\vod_dataset\suspicious\` |
 
-## Process a video
+Folder choice **is** the label. Do not mix unverified footage. The original stays in the inbox.
 
-1. Double-click **`watch_vod_inbox.bat`**. Leave the CheatVision VOD Inbox
-   window open. Videos already in the folders when the watcher starts are
-   ignored; drop new files after it is running.
-2. Drop the video into exactly one folder:
-   - `data\vod_inbox\clean\` — verified-clean footage.
-   - `data\vod_inbox\cheating\` — footage submitted as confirmed cheating.
-3. When the file has finished copying, enter the watched player's exact
-   in-game tag in the popup. The tag must be visible in the bottom-left HUD.
-4. Wait for the completion popup. Extracted clips are saved under:
-   - `data\vod_dataset\clean\`
-   - `data\vod_dataset\suspicious\`
+**What it reads:** bottom-left HUD (player identity) → middle-left kill feed (that player as killer) → mid-right elimination toast (fallback).
 
-The scanner checks the **middle-left kill feed** for the watched player as the
-killer and verifies player identity against the **bottom-left HUD**. The
-mid-right elimination toast is a fallback. The input video stays in the inbox.
-No `.player.txt` file is needed.
+## 2 · Long VOD or short clip
 
-## Long VODs and short-form clips
+Same scan either way. Default window is **10 sec before + 4 sec after** each distinct kill. A short file uses whatever footage it has.
 
-Drop both long recordings and short clips into the same labeled folders. The
-tool scans the whole video and exports context around each distinct kill it
-detects. Longer footage includes 10 seconds before and 4 seconds after each
-kill by default. A short clip is trimmed to the footage it actually contains.
+If the kill feed / toast is already gone, **no clip is created** — the original stays in the inbox. That avoids labeling unrelated footage as a kill.
 
-Short clips still need a visible kill-feed row or elimination toast and the
-player tag in the HUD. If the kill indicator is no longer on screen, no clip is
-created; the original stays in the inbox so it can be reviewed and re-exported.
+## 3 · Train, review, send
 
-## Training and safety
+Training runs only if **both** clean and suspicious clips exist. Candidate: `data\models\candidates\`. **Not** loaded by live CheatVision; does not update main.
 
-After processing creates clips, the tool attempts training only when both
-clean and suspicious examples exist and training packages are installed. It
-saves a timestamped **offline candidate** under
-`data\models\candidates\candidate_...`. If training cannot run, the window
-reports why; labeled clips remain available for a later run.
+Before sharing: confirm the inbox folder, spot-check clips for OCR mistakes, send `data\vod_dataset\` on the agreed channel. Do not commit videos to Git.
 
-This candidate is not loaded into CheatVision. The live detection pipeline and
-main model are unchanged. Keep each input video entirely consistent with its
-folder label, review the extracted clips before using them for future work, and
-send the resulting dataset to the project owner through the agreed secure
-channel.
+---
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| No popup | Watcher open first; copy a *new* file into `clean` or `cheating`. Cancelled prompt: copy again with a new filename. |
+| No clips | Check tag spelling. Bottom-left name and a kill indicator must be visible. |
+| Watcher still running | Keep the window open until the current video finishes. |

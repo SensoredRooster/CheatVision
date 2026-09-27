@@ -4,9 +4,10 @@ cd /d "%~dp0"
 echo.
 echo  CheatVision setup
 echo  =================
-echo  This creates the app's own Python environment in .venv, installs its
-echo  packages, installs ffmpeg if it is missing, and optionally fetches the
-echo  YOLO player detector. Run it once. Afterwards start the app with run.bat.
+echo  First-time install: creates .venv, installs app packages, VOD OCR,
+echo  training extras, ffmpeg if missing, and the optional player detector.
+echo  For later GitHub updates, use update.bat.
+echo  Afterwards start the app with run.bat, or the VOD inbox with watch_vod_inbox.bat.
 echo.
 
 rem ---- 1. Python -------------------------------------------------------------
@@ -36,7 +37,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 set "VPY=.venv\Scripts\python.exe"
 
-rem ---- 3. Packages the app needs ---------------------------------------------
+rem ---- 3. Packages the app, VOD clipper, and trainer need --------------------
 echo [..] Installing packages. A few minutes the first time.
 "%VPY%" -m pip install --upgrade pip >nul 2>nul
 "%VPY%" -m pip install -r requirements.txt
@@ -44,6 +45,11 @@ if errorlevel 1 (
   echo [!!] pip install failed. Check your internet connection and run setup.bat again.
   pause
   exit /b 1
+)
+echo [..] Installing training extras (needed for the player detector and offline VOD training) ...
+"%VPY%" -m pip install -r requirements-train.txt
+if errorlevel 1 (
+  echo [!!] Training extras failed to install. The live app can still run. Re-run setup.bat to retry.
 )
 
 rem ---- 4. ffmpeg ---------------------------------------------------------------
@@ -66,7 +72,14 @@ if /i not "%GPU%"=="N" (
   "%VPY%" -m pip install onnxruntime-directml
 )
 
-rem ---- 6. Player detector ------------------------------------------------------
+rem ---- 6. VOD OCR without replacing the ONNX runtime --------------------------
+echo [..] Installing VOD clip OCR (--no-deps so DirectML / CPU ONNX Runtime stays put) ...
+"%VPY%" -m pip install --no-deps -r requirements-vod-ocr.txt
+if errorlevel 1 (
+  echo [!!] VOD OCR failed to install. Re-run setup.bat to retry. The live app can still run.
+)
+
+rem ---- 7. Player detector ------------------------------------------------------
 echo.
 echo  The player detector lets flags be confirmed against a player box.
 echo  It downloads about 300 MB once. The app runs without it, aim motion only.
@@ -80,5 +93,8 @@ if /i "%ANSWER%"=="N" (
 )
 
 echo.
-echo Setup finished. Double-click run.bat to start CheatVision.
+echo Setup finished.
+echo   Live app:      double-click run.bat
+echo   VOD tester:    double-click watch_vod_inbox.bat
+echo   Later updates: double-click update.bat
 pause

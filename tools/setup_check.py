@@ -330,7 +330,7 @@ def check_vod_ocr() -> Check:
             "VOD clip OCR",
             False,
             "not installed (only needed for the Warzone VOD inbox clipper)",
-            ".venv\\Scripts\\python.exe -m pip install --no-deps -r requirements-vod-ocr.txt",
+            "Run setup.bat or update.bat (they install VOD OCR with --no-deps so the app ONNX Runtime stays put).",
             required=False,
         )
     version = str(getattr(module, "__version__", "")).strip()
