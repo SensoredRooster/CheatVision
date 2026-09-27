@@ -8,11 +8,63 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QProgressBar,
     QSizePolicy,
     QWidget,
 )
 
 from src.ui.left_rail import RAIL_SIDE_MARGIN, RAIL_WIDTH
+
+
+class ProgressIndicator(QWidget):
+    """Displays processing progress: percentage, estimated time remaining, and fps."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ProgressIndicator")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setFixedHeight(14)
+        self.progress_bar.setMinimumWidth(150)
+        self.progress_bar.setMaximumWidth(250)
+        self.progress_bar.setObjectName("ProcessingProgressBar")
+        layout.addWidget(self.progress_bar)
+
+        # Text label: percentage, time remaining, fps
+        self.info_label = QLabel("0% — --:-- remaining")
+        self.info_label.setObjectName("ProgressInfoLabel")
+        self.info_label.setMinimumWidth(140)
+        self.info_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        layout.addWidget(self.info_label)
+
+        self.hide()
+
+    def update_progress(self, percentage: float, seconds_remaining: float, fps: float) -> None:
+        """Update progress display."""
+        self.progress_bar.setValue(int(percentage))
+
+        # Format time remaining
+        minutes = int(seconds_remaining) // 60
+        seconds = int(seconds_remaining) % 60
+        time_str = f"{minutes}:{seconds:02d}"
+
+        info_text = f"{percentage:.1f}% — {time_str} remaining ({fps:.1f} fps)"
+        self.info_label.setText(info_text)
+
+        if not self.isVisible():
+            self.show()
+
+    def reset(self) -> None:
+        """Reset progress display and hide."""
+        self.progress_bar.setValue(0)
+        self.info_label.setText("0% — --:-- remaining")
+        self.hide()
 
 
 class StatusLabel(QLabel):
@@ -120,6 +172,10 @@ class ControlBar(QWidget):
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             rail_layout.addWidget(button, 1)
         layout.addWidget(self.rail_block, 0)
+
+        # Progress indicator for VOD processing
+        self.progress_indicator = ProgressIndicator()
+        layout.addWidget(self.progress_indicator, 0)
 
         # Live status (mode, profile, warnings) lives here instead of a bottom
         # status bar, so the video reaches the window edge. It starts where the

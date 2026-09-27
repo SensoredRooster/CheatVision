@@ -329,6 +329,7 @@ class MainWindow(QMainWindow):
         self._playback_worker.sourceOpened.connect(self._on_playback_source_opened)
         self._playback_worker.playbackFinished.connect(self._on_playback_finished)
         self._playback_worker.playbackError.connect(self._on_playback_error)
+        self._playback_worker.progressChanged.connect(self.control_bar.progress_indicator.update_progress)
         self._playback_thread.started.connect(self._playback_worker.start)
 
         self._analysis_worker.set_source(self._playback_worker)
@@ -751,6 +752,8 @@ class MainWindow(QMainWindow):
         self.status_label.setText(self._status_text_with_mode())
         # Nothing is playing any more: back to the brand mark.
         self.video_canvas.clear_frame()
+        # Reset progress indicator display
+        self.control_bar.progress_indicator.reset()
 
     @Slot(str)
     def _on_playback_error(self, message: str) -> None:

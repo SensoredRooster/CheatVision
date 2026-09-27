@@ -392,6 +392,8 @@ class PlaybackWorker(QObject):
     sourceOpened = Signal(int, int, float, int)
     playbackFinished = Signal()
     playbackError = Signal(str)
+    # Emits (percentage: float, estimated_seconds_remaining: float, frames_per_sec: float)
+    progressChanged = Signal(float, float, float)
 
     def __init__(self, video_path: str, fps_override: float = 0.0):
         super().__init__()
@@ -406,6 +408,9 @@ class PlaybackWorker(QObject):
         self._seek_target: int | None = None
         self._capture: cv2.VideoCapture | None = None
         self.total_frames = 0
+        # Progress tracking: emit at ~2Hz to avoid spamming the UI
+        self._last_progress_emit_time = 0.0
+        self._progress_emit_interval = 0.5  # seconds
 
     def get_latest_context(self) -> FrameContext | None:
         with self._lock:
@@ -475,7 +480,14 @@ class PlaybackWorker(QObject):
                 self._latest_context = context
                 self._frame_condition.notify_all()
 
-            next_due += frame_delay
+            # Emit progress at throttled interval
+            now = time.perf_counter()
+            if now - self._last_progress_emit_time >= self._progress_emit_interval and self.total_frames > 0:
+                self._last_progress_emit_time = now
+                percentage = (frame_id / self.total_frames) * 100.0
+                remaining_frames = self.total_frames - frame_id
+                estimated_seconds = remaining_frames / fps if fps > 0 else 0.0
+                self.progressChanged.emit(percentage, estimated_seconds, fps)
             now = time.perf_counter()
             if next_due < now - frame_delay * 4:
                 # Decoding fell far behind (e.g. seek or stall): resync the
