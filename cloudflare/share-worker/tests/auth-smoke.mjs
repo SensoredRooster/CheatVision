@@ -114,6 +114,28 @@ try {
     extraHeaders: { "x-file-path": encodeURIComponent("Tester Uploads/sample.txt") },
   })).response.status, 200, "tester can upload to an allowed folder");
 
+  const multipartStart = await request(base, "/api/multipart/start", {
+    method: "POST", cookie: testerCookie,
+    body: { key: "VODs/Incoming/test-vod.mp4", description: "multipart smoke", content_type: "video/mp4", size: 6 },
+  });
+  assert.equal(multipartStart.response.status, 200, "tester can start a VOD multipart upload");
+  const multipartPart = await request(base, "/api/multipart/part?key="+encodeURIComponent("VODs/Incoming/test-vod.mp4")+"&upload_id="+encodeURIComponent(multipartStart.data.upload_id)+"&part=1", {
+    method: "POST", cookie: testerCookie, body: "abcdef", rawBody: true,
+    extraHeaders: { "content-type": "application/octet-stream" },
+  });
+  assert.equal(multipartPart.response.status, 200, "tester can upload a multipart VOD part");
+  const multipartComplete = await request(base, "/api/multipart/complete", {
+    method: "POST", cookie: testerCookie,
+    body: { key: "VODs/Incoming/test-vod.mp4", upload_id: multipartStart.data.upload_id, parts: [{ partNumber: multipartPart.data.partNumber, etag: multipartPart.data.etag }] },
+  });
+  assert.equal(multipartComplete.response.status, 200, "tester can complete a VOD multipart upload");
+  const vodList = await request(base, "/api/list?prefix="+encodeURIComponent("VODs/Incoming/"), { cookie: testerCookie });
+  assert.ok(vodList.data.objects.some(o => o.key === "VODs/Incoming/test-vod.mp4"), "completed VOD appears in Incoming");
+  assert.equal((await request(base, "/api/multipart/start", {
+    method: "POST", cookie: testerCookie,
+    body: { key: "VODs/Reviewed/blocked.mp4", content_type: "video/mp4", size: 6 },
+  })).response.status, 403, "tester cannot upload directly to VODs/Reviewed");
+
   const roster = await request(base, "/api/users", { cookie: adminCookie });
   const tester = roster.data.users.find(user => user.role === "tester");
   assert.ok(tester, "admin sees tester roster");

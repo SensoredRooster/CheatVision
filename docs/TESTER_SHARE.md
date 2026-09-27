@@ -13,8 +13,9 @@ Private tester file sharing is provided by a Cloudflare Worker backed by a priva
 **Tester**
 
 - Browse and download files.
-- Upload to `Tester Uploads`, `Screenshots`, `Bug Reports`, and `Logs`.
-- Cannot upload releases, delete files, or change the Latest build.
+- Upload to `Tester Uploads`, `VODs/Incoming`, `Screenshots`, `Bug Reports`, and `Logs`.
+- Large files use resumable-style R2 multipart uploads in 50 MB parts.
+- Cannot upload releases, write directly to reviewed/archived VOD areas, delete files, or change the Latest build.
 
 **Admin**
 
@@ -28,6 +29,9 @@ Private tester file sharing is provided by a Cloudflare Worker backed by a priva
 
 - `Releases`
 - `Tester Uploads`
+- `VODs/Incoming` — tester VOD drop area
+- `VODs/Reviewed` — administrator-managed reviewed VODs
+- `VODs/Archived` — administrator-managed archived VODs
 - `Screenshots`
 - `Bug Reports`
 - `Logs`
@@ -43,7 +47,7 @@ The admin creates each tester account from the **Tester accounts** panel and pri
 
 Each person has an individual email-based login and password. Passwords are stored as salted PBKDF2-HMAC-SHA-256 digests in D1; the former shared `Admin123` / `Tester123` passwords are not used after deployment. Browser sessions use random opaque tokens, and only token hashes are stored. The session cookie is Secure, HttpOnly, and SameSite=Strict.
 
-Login attempts and uploads are rate limited. Files are limited to 75 MB per upload. The Worker sets no-store and common browser security headers. Disabling an account invalidates its active sessions but leaves its files untouched.
+Login attempts and uploads are rate limited. Files up to 50 MB use the simple upload path. Larger files automatically use R2 multipart upload with 50 MB parts, with a 10 GB per-file safety ceiling. This avoids the old 75 MB whole-file limit while keeping each request below Cloudflare's request-body ceiling. Failed multipart uploads are aborted by the browser when possible. The Worker sets no-store and common browser security headers. Disabling an account invalidates its active sessions but leaves its files untouched.
 
 ## Deployment
 
