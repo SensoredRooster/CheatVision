@@ -33,7 +33,11 @@ RUNTIME_PACKAGES = (
     ("mss", "mss"),
     ("onnxruntime", "onnxruntime"),
 )
-TRAIN_PACKAGES = (("torch", "torch"), ("ultralytics", "ultralytics"))
+TRAIN_PACKAGES = (
+    ("torch", "torch"),
+    ("ultralytics", "ultralytics"),
+)
+VOD_OCR_PACKAGE = ("rapidocr_onnxruntime", "rapidocr-onnxruntime")
 MIN_MODEL_BYTES = 1_000_000
 WINGET_FFMPEG = "winget install -e --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements"
 
@@ -312,7 +316,28 @@ def check_train_extras() -> Check:
     return Check(
         "Training extras",
         True,
-        "not installed (fine: only needed to fetch the model or retrain)",
+        "not installed (fine: only needed for model export or retraining)",
+        required=False,
+    )
+
+
+def check_vod_ocr() -> Check:
+    import_name, pip_name = VOD_OCR_PACKAGE
+    try:
+        module = importlib.import_module(import_name)
+    except Exception:
+        return Check(
+            "VOD clip OCR",
+            False,
+            "not installed (only needed for the Warzone VOD inbox clipper)",
+            ".venv\\Scripts\\python.exe -m pip install --no-deps -r requirements-vod-ocr.txt",
+            required=False,
+        )
+    version = str(getattr(module, "__version__", "")).strip()
+    return Check(
+        "VOD clip OCR",
+        True,
+        f"{pip_name} {version}".strip(),
         required=False,
     )
 
@@ -329,6 +354,7 @@ def run_checks() -> list[Check]:
         check_settings(),
         check_folders(),
         check_train_extras(),
+        check_vod_ocr(),
     ]
 
 

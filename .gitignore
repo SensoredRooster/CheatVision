@@ -30,6 +30,8 @@ startup_crash.log
 data/eval_synthetic/
 data/training.csv
 data/_clean_fp_*/
+data/vod_inbox/
+data/vod_dataset/
 
 
 # Generated evaluation output

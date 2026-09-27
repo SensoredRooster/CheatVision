@@ -508,6 +508,85 @@ positives per clip. On the author's legit 1440p144 Warzone highlights the
 current rules produce **0 false positives**; recall on real cheats still needs
 labelled cheat footage — if you have some, this is the tool to run it through.
 
+### Build a labeled dataset from Warzone videos
+
+The VOD inbox is an **offline** clip-and-training helper. It does not change,
+replace, or feed the live CheatVision detection pipeline. The easiest option
+for testers is to double-click `watch_vod_inbox.bat`; detailed, printable steps
+are in [docs/TESTER_QUICK_START.md](docs/TESTER_QUICK_START.md).
+
+#### Install once
+
+In PowerShell opened in the repository folder:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --no-deps -r requirements-vod-ocr.txt
+```
+
+When training is wanted, also install the training packages:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-train.txt
+```
+
+Use `--no-deps` for the OCR requirements: this prevents OCR setup from
+replacing the app's CPU or DirectML ONNX Runtime. The OCR dependencies needed
+without changing that runtime are listed in `requirements-vod-ocr.txt`.
+Run `tools/setup_check.py` after installing optional training packages. If the
+player detector changes from GPU/DirectML to CPU, restore DirectML with
+`.venv\Scripts\python.exe -m pip uninstall -y onnxruntime` followed by
+`.venv\Scripts\python.exe -m pip install onnxruntime-directml`. Make sure
+`ffmpeg` is installed and available on PATH.
+
+#### Tester folder workflow
+
+1. Start `watch_vod_inbox.bat` and leave its small watcher window open.
+2. Drop a video into `data/vod_inbox/clean/` for verified-clean footage or
+   `data/vod_inbox/cheating/` for footage where the kills being submitted are
+   confirmed cheating. These folders are created automatically. Do not mix
+   unverified or differently labeled footage in either video.
+3. After the copy finishes, a popup asks for the watched player's exact
+   in-game gamer tag. The scanner verifies that name in the persistent
+   bottom-left player HUD, then looks for the tag as killer in the middle-left
+   kill feed. A mid-right elimination toast is a fallback after identity
+   verification.
+4. The window reports created clips, training status, or a visible error.
+   Inputs stay in the inbox; extracted clips are added to
+   `data/vod_dataset/clean/` or `data/vod_dataset/suspicious/`.
+
+The watcher ignores videos already present when it starts and waits for a new
+video's file size/time to stop changing before asking about it. It handles one
+video at a time. If the tag prompt is cancelled, copy the video back with a new
+filename to retry. Keep the watcher open while the tester is adding footage.
+The command-line batch alternative, `tools/process_vod_inbox.py`, also prompts
+for a tag in its console; no `.player.txt` sidecar is required.
+
+#### Long VODs and short clips
+
+Long recordings and already-trimmed short clips use the same OCR scan. The
+scanner samples the whole input, verifies the watched-player HUD, and extracts
+context around distinct kill-feed moments. A short clip is bounded naturally
+by its available footage; it is not required to contain a full 10 seconds
+before or 4 seconds after a kill. The default context for longer footage is
+10 seconds before and 4 seconds after each detected kill.
+
+If a short clip no longer shows the kill feed or elimination toast, the scanner
+will report no event and create no training clip; the original remains in the
+inbox for review. This avoids labeling unrelated footage as a kill. The tag
+must still be visible in the bottom-left HUD. Supported formats are MP4, AVI,
+MKV, and MOV.
+
+Output clips are H.264-compressed, scaled to at most 960x540, and capped at
+60 fps. After a new video creates clips, the watcher attempts to train an
+offline candidate from the collected clean and suspicious clip folders. It
+reports when either class or training packages are missing. Candidate files
+are saved in a timestamped folder under `data/models/candidates/`; they are
+**not loaded by the live app**. Training is a separate, experimental offline
+step and does not update the main branch or production detector automatically.
+Review labels, OCR misses/false matches, and candidate quality before any
+future live integration. Pass a custom normalized OCR crop in CSV order with
+`--roi`, `--elimination-roi`, or `--player-hud-roi` when the HUD layout differs.
+
 The grey `clean_*.mp4` / `suspicious_*.mp4` clips you may find under `data/` are
 **synthetic test fixtures** from `tools/make_synthetic_eval.py` (noise texture
 + fake HUD + a dot), not real captures.

@@ -1,0 +1,10 @@
+# Optional OCR for tools/process_vod_inbox.py.
+# Install with `pip install --no-deps -r requirements-vod-ocr.txt` to avoid
+# replacing the app's ONNX Runtime. That runtime (CPU or DirectML) comes from
+# requirements.txt.
+rapidocr-onnxruntime>=1.2.3
+pyclipper>=1.2.1
+Shapely>=1.7.1
+six>=1.15.0
+PyYAML
+Pillow

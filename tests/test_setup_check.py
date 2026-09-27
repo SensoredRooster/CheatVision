@@ -18,7 +18,7 @@ class SetupCheckTests(unittest.TestCase):
     def test_every_check_runs_and_reports(self) -> None:
         results = setup_check.run_checks()
         names = [check.name for check in results]
-        for expected in ("Windows", "Python", "Environment", "Packages", "ffmpeg", "Capture devices", "Player detector", "Settings", "Folders"):
+        for expected in ("Windows", "Python", "Environment", "Packages", "ffmpeg", "Capture devices", "Player detector", "Settings", "Folders", "VOD clip OCR"):
             self.assertIn(expected, names)
         for check in results:
             self.assertTrue(check.detail, check.name)
@@ -55,6 +55,13 @@ class RequirementsSplitTests(unittest.TestCase):
         train = (ROOT / "requirements-train.txt").read_text(encoding="utf-8")
         self.assertRegex(train, r"(?m)^torch\b")
         self.assertRegex(train, r"(?m)^ultralytics\b")
+
+    def test_vod_ocr_does_not_install_or_replace_onnxruntime(self) -> None:
+        ocr = (ROOT / "requirements-vod-ocr.txt").read_text(encoding="utf-8")
+        self.assertRegex(ocr, r"(?m)^rapidocr-onnxruntime\b")
+        self.assertNotRegex(ocr, r"(?m)^onnxruntime\b")
+        for dependency in ("pyclipper", "Shapely", "six", "PyYAML", "Pillow"):
+            self.assertRegex(ocr, rf"(?im)^{dependency}\b")
 
     def test_setup_scripts_exist(self) -> None:
         self.assertTrue((ROOT / "setup.bat").is_file())
