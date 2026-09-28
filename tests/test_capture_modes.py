@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 from src.core import frame_source
-from src.core.frame_source import discover_directshow_devices, selectable_modes_from_ranges
+from src.core.frame_source import _list_directshow_video_names, discover_directshow_devices, selectable_modes_from_ranges
 
 
 class SelectableModesTests(unittest.TestCase):
@@ -43,6 +43,19 @@ class SelectableModesTests(unittest.TestCase):
 
 
 class DeviceDiscoveryTests(unittest.TestCase):
+    def test_parses_video_audio_device_capabilities_in_either_order(self) -> None:
+        output = """
+        [dshow @ 0] "Capture Card One" (audio, video)
+        [dshow @ 0] "Capture Card Two" (video, audio)
+        [dshow @ 0] "Webcam" (video)
+        [dshow @ 0] "Mic" (audio)
+        """
+        with mock.patch.object(frame_source, "_run_ffmpeg_query", return_value=output):
+            self.assertEqual(
+                _list_directshow_video_names(),
+                ["Capture Card One", "Capture Card Two", "Webcam"],
+            )
+
     def test_lists_every_present_device_with_no_cap(self) -> None:
         names = [f"Device {i}" for i in range(8)]
         with mock.patch.object(frame_source, "_list_directshow_video_names", return_value=names):
